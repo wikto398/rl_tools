@@ -1,35 +1,28 @@
 from abc import ABC, abstractmethod
+import logging
 
 class ObservationInterface(ABC):
-    def __init__(self):
+    def __init__(self, logger: logging.Logger | None = None, **kwargs):
         super().__init__()
         self._observation = None
+        self._logger = logger if logger else logging.getLogger(__name__)
 
     def get_observation(self):
         """Retrieve the current observation from the environment."""
         try:
             data = self._get_observation()
         except KeyboardInterrupt:
-            print("Observation receiving interrupted by user.")
+            if self._logger:
+                self._logger.error("Observation receiving interrupted by user.")
             exit(0)
         return data
 
     @abstractmethod
-    def _get_observation(self):
+    def _get_observation(self) -> bytes | None:
         """Retrieve the current observation from the environment."""
         pass
 
-    @property
-    def normalized_observation(self):
-        """Normalize the given observation."""
+    @abstractmethod
+    def parse_observation(self, raw_observation: bytes) -> dict | bytes | list:
+        """Parse the raw observation data if necessary."""
         pass
-
-    @property
-    def observation(self):
-        """Get the current observation."""
-        return self._observation
-
-    @observation.setter
-    def observation(self, value):
-        """Set the current observation."""
-        self._observation = value

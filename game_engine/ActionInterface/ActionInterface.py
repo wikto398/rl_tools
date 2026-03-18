@@ -1,18 +1,20 @@
 from abc import ABC, abstractmethod
+import logging
 
 class ActionInterface(ABC):
-    def __init__(self):
+    def __init__(self, logger: logging.Logger | None = None, **kwargs):
         super().__init__()
+        self._logger = logger if logger else logging.getLogger(__name__)
 
     def send_action(self, action):
         """Send the given action to the environment."""
-        print(f"Sending action: {action}")
+        self._logger.info(f"Sending action: {action}")
         try:
             self._send_action(action)
         except KeyboardInterrupt:
-            print("Action sending interrupted by user.")
+            self._logger.error("Action sending interrupted by user.")
             exit(0)
-    
+
     @abstractmethod
     def _send_action(self, action):
         """Internal method to handle action sending logic."""
