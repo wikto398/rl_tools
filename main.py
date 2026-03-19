@@ -72,7 +72,7 @@ def start_instance(instance_id: int = 0, args = None, log_path = None) -> GameEn
     }
     for key, value in vars(args).items():
         game_engine_kwargs[key] = value
-    game_envc_connector = GameEnvConnector(
+    game_env_connector = GameEnvConnector(
         instance_id=instance_id,
         action_interface=udp_action_sender,
         observation_interface=udp_observer,
@@ -82,8 +82,8 @@ def start_instance(instance_id: int = 0, args = None, log_path = None) -> GameEn
         logger=logger,
         log_path=log_path,
     )
-    game_envc_connector.start()
-    return game_envc_connector
+    game_env_connector.start()
+    return game_env_connector
 
 def main():
     args = parse_args()
