@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 import logging
 
+
 class ActionInterface(ABC):
     def __init__(self, logger: logging.Logger | None = None, **kwargs):
         super().__init__()
