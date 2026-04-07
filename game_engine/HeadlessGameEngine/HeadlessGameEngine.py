@@ -2,6 +2,7 @@ import os
 import enum
 
 from abc import ABC, abstractmethod
+import subprocess
 
 
 class HeadlessGameEngine(ABC):
@@ -29,7 +30,7 @@ class HeadlessGameEngine(ABC):
             else f"headless_game_engine_{self.instance_id}.log"
         )
         self.kwargs = kwargs
-        self.process = None
+        self.process: subprocess.Popen
         self.start()
 
     @abstractmethod

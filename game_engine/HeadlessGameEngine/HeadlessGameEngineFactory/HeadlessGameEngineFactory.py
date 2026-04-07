@@ -1,6 +1,8 @@
 from __future__ import annotations
-from game_engine.HeadlessGameEngine.HeadlessGameEngine import HeadlessGameEngine
-from game_engine.HeadlessGameEngine.GodotHeadless.GodotHeadless import GodotHeadless
+from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
+from rl_tools.game_engine.HeadlessGameEngine.GodotHeadless import (
+    GodotHeadless,
+)
 
 
 class HeadlessGameEngineFactory:

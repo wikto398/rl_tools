@@ -1,7 +1,7 @@
 import logging
 import socket
 
-from game_engine.ActionInterface.ActionInterface import ActionInterface
+from rl_tools.game_engine.ActionInterface import ActionInterface
 
 
 class UDPAction(ActionInterface):

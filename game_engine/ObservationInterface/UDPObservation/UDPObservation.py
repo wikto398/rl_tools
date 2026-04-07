@@ -2,7 +2,7 @@ import logging
 
 import msgpack
 import socket
-from game_engine.ObservationInterface.ObservationInterface import ObservationInterface
+from rl_tools.game_engine.ObservationInterface import ObservationInterface
 
 MAX_RETRIES = 5
 

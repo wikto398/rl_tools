@@ -5,12 +5,12 @@ import os
 
 from datetime import datetime
 from types import SimpleNamespace
-from game_engine.ObservationInterface.UDPObservation.UDPObservation import (
+from rl_tools.game_engine.ObservationInterface.UDPObservation import (
     UDPObservation,
 )
-from game_engine.ActionInterface.UDPAction.UDPAction import UDPAction
-from game_engine.GameEnvConnector.GameEnvConnector import GameEnvConnector
-from game_engine.HeadlessGameEngine.HeadlessGameEngine import HeadlessGameEngine
+from rl_tools.game_engine.ActionInterface.UDPAction import UDPAction
+from rl_tools.game_engine.GameEnvConnector import GameEnvConnector
+from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
 
 CONFIG = SimpleNamespace(
     PYTHON_HOST="127.0.0.1",

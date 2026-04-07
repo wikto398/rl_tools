@@ -1,17 +1,12 @@
 import logging
-
-from game_engine.ActionInterface.ActionInterface import ActionInterface
-from game_engine.ObservationInterface.ObservationInterface import ObservationInterface
-from game_engine.HeadlessGameEngine.HeadlessGameEngineFactory.HeadlessGameEngineFactory import (
-    HeadlessGameEngineFactory,
-)
-from game_engine.HeadlessGameEngine.HeadlessGameEngine import HeadlessGameEngine
 from subprocess import TimeoutExpired
 
-from game_engine.ObservationNormalizer.ObservationNormalizer import (
-    ObservationNormalizer,
+from rl_tools.game_engine.ActionInterface import ActionInterface
+from rl_tools.game_engine.ObservationInterface import ObservationInterface
+from rl_tools.game_engine.HeadlessGameEngine.HeadlessGameEngineFactory import (
+    HeadlessGameEngineFactory,
 )
-from game_engine.RewardNormalizer.RewardNormalizer import RewardNormalizer
+from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
 
 MAX_RETRIES = 5
 
@@ -22,8 +17,6 @@ class GameEnvConnector:
         instance_id: int,
         action_interface: ActionInterface,
         observation_interface: ObservationInterface,
-        observation_normalizer: ObservationNormalizer | None = None,
-        reward_normalizer: RewardNormalizer | None = None,
         game_engine_type: HeadlessGameEngine.GameEngineType | None = None,
         game_engine_args: list | None = None,
         game_engine_kwargs: dict | None = None,
@@ -35,8 +28,6 @@ class GameEnvConnector:
         self.instance_id = instance_id
         self.action_interface = action_interface
         self.observation_interface = observation_interface
-        self.observation_normalizer = observation_normalizer
-        self.reward_normalizer = reward_normalizer
         self._retries = 0
         self.game_engine: HeadlessGameEngine = self._start_game_engine(
             game_engine_type,
@@ -102,10 +93,6 @@ class GameEnvConnector:
         self._send_action(action)
         observation = self._get_observation()
         obs, reward, done, info = self._split_observation(observation)
-        if self.observation_normalizer:
-            obs = self.observation_normalizer.normalize(obs)
-        if self.reward_normalizer:
-            reward = self.reward_normalizer.normalize(reward)
         return obs, reward, done, info
 
     def reset(self) -> dict:
@@ -113,8 +100,6 @@ class GameEnvConnector:
         self._reset_environment()
         observation = self._get_observation()
         obs, _, _, _ = self._split_observation(observation)
-        if self.observation_normalizer:
-            obs = self.observation_normalizer.normalize(obs)
         return obs
 
     def _start_game_engine(
@@ -140,7 +125,7 @@ class GameEnvConnector:
     def _split_observation(self, observation: dict) -> tuple:
         """Parse the raw observation data if necessary."""
         obs = {
-            "observation": observation.get("obs", {}),
+            "observation": observation.get("observation", {}),
             "action_mask": observation.get("action_mask", {}),
         }
         reward = observation.get("reward", 0.0)

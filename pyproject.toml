@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "msgpack>=1.1.2",
     "pre-commit>=4.5.1",
+    "tensordict>=0.11.0",
 ]
 
 [project.optional-dependencies]
@@ -14,6 +15,12 @@ torch-rocm = [
     "torch",
     "torchvision",
     "triton-rocm",
+]
+dev = [
+    "ruff>=0.15.8",
+]
+logging = [
+    "wandb>=0.25.1",
 ]
 
 [tool.uv.sources]
@@ -29,9 +36,4 @@ explicit = true   # only used when explicitly referenced, not for all packages
 [tool.uv.workspace]
 members = [
     "rl_tools",
-]
-
-[dependency-groups]
-dev = [
-    "ruff>=0.15.8",
 ]

@@ -1,7 +1,7 @@
 import subprocess
 from os import path
 
-from game_engine.HeadlessGameEngine.HeadlessGameEngine import HeadlessGameEngine
+from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
 
 
 class GodotHeadless(HeadlessGameEngine):
@@ -25,12 +25,14 @@ class GodotHeadless(HeadlessGameEngine):
 
     def start(self):
         print("Starting Godot headless game engine...")
-        command = ["godot", "--path", self.project_path, "--headless"]
+        command = ["godot", "--path", self.project_path]
         if self.run_args:
             command.extend(self.run_args)
         if self.run_kwargs:
             for key, value in self.run_kwargs.items():
                 command.append(f"--{key}={value}")
+        if self.run_kwargs and not self.run_kwargs.get("render", False):
+            command.append("--headless")
         try:
             print("Godot headless game engine command:", " ".join(command))
             with open(path.join(self.log_path, self.log_file_name), "w") as log_file:

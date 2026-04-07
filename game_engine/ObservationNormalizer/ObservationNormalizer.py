@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from tensordict import TensorDict
 
 
 class ObservationNormalizer(ABC):
@@ -6,11 +7,11 @@ class ObservationNormalizer(ABC):
         super().__init__()
         self.kwargs = kwargs
 
-    def normalize(self, observation: dict) -> dict:
+    def normalize(self, observation: TensorDict) -> TensorDict:
         """Normalize the observation data if necessary."""
         return self._normalize(observation)
 
     @abstractmethod
-    def _normalize(self, observation: dict) -> dict:
+    def _normalize(self, observation: TensorDict) -> TensorDict:
         """Normalize the observation data if necessary."""
         pass
