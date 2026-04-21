@@ -1,6 +1,7 @@
 import logging
 
 import torch
+from torch.utils.tensorboard.writer import SummaryWriter
 import wandb
 import numpy as np
 from abc import ABC, abstractmethod
@@ -24,6 +25,7 @@ class RLAgent(ABC):
         device: torch.device | None = None,
         wandb: wandb.Run | None = None,
         logger: logging.Logger | None = None,
+        tensorboard_writer: SummaryWriter | None = None,
         *args,
         gamma: float = 0.99,
         lam: float = 0.95,
@@ -49,14 +51,19 @@ class RLAgent(ABC):
         self.kwargs = kwargs
 
         self.global_step = 0
+        self.update_steps = 0
         self.wandb = wandb
         self.logger = logger or logging.getLogger(__name__)
+        self.tensorboard_writer = tensorboard_writer
 
         self._initialize_obs()
 
-    def log(self, key: str, value: float | np.floating, step: int):
+    def log(self, key: str, value: float | np.floating):
         if self.wandb:
-            self.wandb.log({key: value}, step=step)
+            self.wandb.log({key: value}, step=self.global_step)
+        if self.tensorboard_writer:
+            self.tensorboard_writer.add_scalar(key, value, global_step=self.global_step)
+        self.logger.info(f"Step {self.global_step}: {key} = {value}")
 
     def info(self, message: str):
         self.logger.info(message)
@@ -107,12 +114,31 @@ class RLAgent(ABC):
         self.obs = [self.split_observation(obs) for obs in obs_list]
 
     def split_observation(self, obs: dict) -> TensorDict:
-        """Split the observation into separate components if necessary."""
-        observation = TensorDict(obs["observation"]).to(torch.float32)
-        action_mask = obs.get("action_mask", None)
-        if action_mask is not None:
-            action_mask = TensorDict(action_mask).to(torch.bool)
-        return TensorDict({"observation": observation, "action_mask": action_mask})
+        observation_dict = obs["observation"]
+        action_mask_dict = obs.get("action_mask", None)
+
+        observation = {
+            k: torch.tensor(v, dtype=torch.float32).unsqueeze(0)
+            for k, v in observation_dict.items()
+        }
+
+        if action_mask_dict is not None:
+            action_mask = {
+                k: torch.tensor(v, dtype=torch.bool).unsqueeze(0)
+                for k, v in action_mask_dict.items()
+            }
+        else:
+            action_mask = None
+
+        return TensorDict(
+            {
+                "observation": TensorDict(observation, batch_size=[1]),
+                "action_mask": TensorDict(action_mask, batch_size=[1])
+                if action_mask
+                else None,
+            },
+            batch_size=[1],
+        )
 
     def normalize_observation(self, obs: TensorDict) -> TensorDict:
         if self.observation_normalizer:

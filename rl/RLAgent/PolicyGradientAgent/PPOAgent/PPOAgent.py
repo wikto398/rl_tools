@@ -57,29 +57,37 @@ class PPOAgent(PolicyGradientAgent):
 
     def update(
         self,
-        advantages: np.ndarray,
-        returns: np.ndarray,
         rollout_buffer: TensorDict,
         *args,
         **kwargs,
     ):
-        rollout: TensorDict = self._prepare_rollout(advantages, returns, rollout_buffer)
+        full_batch = rollout_buffer.reshape(-1)
+
+        policy_losses = []
+        value_losses = []
+        entropy_losses = []
+        clip_fractions = []
+
         for epoch in range(self.epochs):
-            policy_losses = []
-            value_losses = []
-            entropy_losses = []
-            clip_fractions = []
-            for batch in rollout.batch(self.batch_size, self.device):
-                obs_batch = self.normalize_observation(batch.observations)
-                action_mask_batch = batch.action_masks
-                action_batch = batch.actions
-                old_log_probs_batch = batch.old_log_probs
-                advantages_batch = self.normalize_advantages(batch.advantages)
-                returns_batch = batch.returns
+            indices = torch.randperm(full_batch.shape[0])
+
+            for start in range(0, full_batch.shape[0], self.batch_size):
+                end = start + self.batch_size
+                batch_indices = indices[start:end]
+                batch: TensorDict = full_batch[batch_indices]
+
+                obs_batch = self.normalize_observation(batch["observations"])
+                action_mask_batch = batch["action_masks"]
+                action_batch = batch["actions"]
+                old_log_probs_batch = batch["log_probs"].detach()
+                advantages_batch = batch["advantages"]
+                returns_batch = batch["returns"]
 
                 new_log_probs, new_values, entropy = self.evaluate(
                     obs_batch, action_batch, action_mask_batch
                 )
+
+                new_values = new_values.squeeze(-1)
 
                 ratio = torch.exp(new_log_probs - old_log_probs_batch)
                 unclipped = ratio * advantages_batch
@@ -87,10 +95,9 @@ class PPOAgent(PolicyGradientAgent):
                     torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
                     * advantages_batch
                 )
+
                 policy_loss = -torch.min(unclipped, clipped).mean()
-
                 value_loss = torch.nn.functional.mse_loss(new_values, returns_batch)
-
                 entropy_loss = -entropy.mean()
 
                 loss = (
@@ -99,6 +106,11 @@ class PPOAgent(PolicyGradientAgent):
                     + self.entropy_coef * entropy_loss
                 )
 
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.clip_gradients(max_norm=0.5)
+                self.optimizer.step()
+
                 clip_fraction = ((ratio - 1.0).abs() > self.clip_epsilon).float().mean()
 
                 policy_losses.append(policy_loss.item())
@@ -106,16 +118,7 @@ class PPOAgent(PolicyGradientAgent):
                 entropy_losses.append(entropy_loss.item())
                 clip_fractions.append(clip_fraction.item())
 
-                loss.backward()
-                self.clip_gradients(max_norm=0.5)
-                self.optimizer.step()
-
-            self.log("loss/policy", np.mean(policy_losses), self.global_step)
-            self.log("loss/value", np.mean(value_losses), self.global_step)
-            self.log("loss/entropy", np.mean(entropy_losses), self.global_step)
-            self.log("train/clip_fraction", np.mean(clip_fractions), self.global_step)
-
-            self.info(
-                f"Step {self.global_step}, Epoch {epoch + 1}/{self.epochs} - Policy Loss: {np.mean(policy_losses):.4f}, Value Loss: {np.mean(value_losses):.4f}, Entropy Loss: {np.mean(entropy_losses):.4f}, Clip Fraction: {np.mean(clip_fractions):.4f}"
-            )
-            self.global_step += 1
+        self.log("policy_loss", np.mean(policy_losses))
+        self.log("value_loss", np.mean(value_losses))
+        self.log("entropy_loss", np.mean(entropy_losses))
+        self.log("clip_fraction", np.mean(clip_fractions))

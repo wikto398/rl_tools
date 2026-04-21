@@ -1,4 +1,3 @@
-import numpy as np
 from tensordict import TensorDict
 import torch
 
@@ -52,14 +51,16 @@ class PolicyGradientAgent(RLAgent):
     def train(self, iterations: int, *args, **kwargs):
         for iteration in range(iterations):
             rollout_buffer = self.collect_rollouts()
-            advantages, returns = self.compute_gae(rollout_buffer=rollout_buffer)
-            self.update(advantages, returns, rollout_buffer, *args, **kwargs)
+            self.global_step += self.rollout_size * len(self.envs)
+            self.update_steps += 1
+            self.logger.debug(f"Collected rollout with {len(rollout_buffer)} steps")
+            rollout_buffer = self.compute_gae(rollout_buffer=rollout_buffer)
+            self.logger.debug("Computed GAE advantages and returns for rollout")
+            self.update(rollout_buffer, *args, **kwargs)
 
     @abstractmethod
     def update(
         self,
-        advantages: np.ndarray,
-        returns: np.ndarray,
         rollout_buffer: TensorDict,
         *args,
         **kwargs,
@@ -67,122 +68,130 @@ class PolicyGradientAgent(RLAgent):
         pass
 
     def evaluate(
-        self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor
-    ) -> tuple:
-        action_probs, values = self.network(obs, action_mask)
-        dist = torch.distributions.Categorical(action_probs)
-        log_probs = dist.log_prob(actions)
-        entropy = dist.entropy()
-        return log_probs, values.squeeze(), entropy
+        self,
+        obs: TensorDict,
+        actions: torch.Tensor,
+        action_mask: TensorDict | None = None,
+    ):
+        obs = obs.to(self.device)
+        if action_mask is not None:
+            action_mask = action_mask.to(self.device)
+
+        result = self.network.evaluate(
+            obs,
+            actions,
+            action_mask,
+        )
+
+        return (
+            result["log_probs"],
+            result["value"],
+            result["entropy"],
+        )
 
     def get_action(self, obs: TensorDict) -> TensorDict:
-        self.logger.debug(f"Getting action for observation: {obs}")
         with torch.no_grad():
             observation = obs["observation"].to(self.device)
             action_mask = obs.get("action_mask", None)
             if action_mask is not None:
                 action_mask = action_mask.to(self.device)
             result = self.network(observation, action_mask)
-        self.logger.debug(
-            f"Action: {result['action']}, Log Prob: {result['log_prob']}, Value: {result['value']}"
-        )
         return result
 
-    def compute_gae(self, rollout_buffer: TensorDict) -> tuple[np.ndarray, np.ndarray]:
-        rewards = rollout_buffer["rewards"]
-        values = rollout_buffer["values"]
-        dones = rollout_buffer["dones"]
+    def compute_gae(self, rollout_buffer: TensorDict) -> TensorDict:
+        rewards = rollout_buffer["rewards"].to(self.device)  # [T, N_ENVS]
+        values = rollout_buffer["values"].to(self.device)  # [T, N_ENVS]
+        dones = rollout_buffer["dones"].to(self.device)  # [T, N_ENVS]
+        T = len(rewards)
 
-        advantages = np.zeros_like(rewards)
-        returns = np.zeros_like(rewards)
-        last_advantage = 0
-        last_return = values[-1]
+        # bootstrap next value from current obs
+        with torch.no_grad():
+            next_td = [
+                self.network(
+                    obs["observation"].to(self.device),
+                    obs["action_mask"].to(self.device)
+                    if obs.get("action_mask") is not None
+                    else None,
+                )
+                for obs in self.obs
+            ]
+            next_value = torch.stack([td["value"] for td in next_td]).to(
+                self.device
+            )  # [N_ENVS]
 
-        for t in reversed(range(len(rewards))):
-            mask = 1.0 - dones[t]
-            delta = rewards[t] + self.gamma * values[t + 1] * mask - values[t]
+        advantages = torch.zeros_like(rewards)
+        returns = torch.zeros_like(rewards)
+        last_advantage = torch.zeros_like(rewards[0])
+        last_return = next_value  # bootstrap from current obs
+
+        for t in reversed(range(T)):
+            mask = 1.0 - dones[t].float()
+
+            if t == T - 1:
+                next_val = next_value
+            else:
+                next_val = values[t + 1]
+
+            delta = rewards[t] + self.gamma * next_val * mask - values[t]
             advantages[t] = delta + self.gamma * self.lam * last_advantage * mask
             returns[t] = rewards[t] + self.gamma * last_return * mask
-
             last_advantage = advantages[t]
             last_return = returns[t]
 
-        return advantages, returns
+        return rollout_buffer.update({"advantages": advantages, "returns": returns})
 
     def collect_rollouts(self) -> TensorDict:
-        observations = []
-        action_masks = []
-        actions_list = []
-        log_probs = []
-        rewards = []
-        dones = []
-        values = []
+        rollout = []
 
         for _ in range(self.rollout_size):
-            actions, log_probs, values = [], [], []
+            step_data = []
+
+            # --- policy forward ---
             for obs in self.obs:
                 forward_result = self.get_action(obs)
-                actions.append(forward_result["action"])
-                log_probs.append(forward_result["log_prob"])
-                values.append(forward_result["value"])
 
-            next_obs, rewards, dones = [], [], []
+                td = TensorDict(
+                    {
+                        "observations": obs["observation"],  # already TensorDict
+                        "action_masks": obs["action_mask"],
+                        "actions": forward_result["action"],
+                        "log_probs": forward_result["log_prob"],
+                        "values": forward_result["value"],
+                    },
+                    batch_size=[],
+                )
+
+                step_data.append(td)
+
+            # --- stack envs → [N] ---
+            step_td = torch.stack(step_data)
+
+            # --- env step ---
+            next_obs = []
+            rewards = []
+            dones = []
+
             for i, env in enumerate(self.envs):
-                o, r, d, _ = env.step(actions[i])
+                action = step_td["actions"][i].cpu().numpy()
+                o, r, d, _ = env.step(action)
+
                 if d:
                     o = env.reset()
+
                 next_obs.append(o)
                 rewards.append(r)
                 dones.append(d)
-            observations.append([obs["observation"] for obs in self.obs])
-            action_masks.append([obs["action_mask"] for obs in self.obs])
-            actions_list.append(actions)
-            log_probs.append(log_probs)
-            rewards.append(np.array(rewards))
-            dones.append(np.array(dones))
-            values.append(values)
 
-            self.obs = [self.split_observation(obs) for obs in next_obs]
+            # add rewards/dones to step TensorDict
+            step_td["rewards"] = torch.tensor(rewards, dtype=torch.float32)
+            step_td["dones"] = torch.tensor(dones, dtype=torch.bool)
 
-        return TensorDict(
-            {
-                "observations": np.array(observations),
-                "action_masks": np.array(action_masks),
-                "actions": np.array(actions_list),
-                "log_probs": np.array(log_probs),
-                "rewards": np.array(rewards),
-                "dones": np.array(dones),
-                "values": np.array(values),
-            }
-        )
+            rollout.append(step_td)
 
-    def _flatten_rollout(self, array: np.ndarray) -> np.ndarray:
-        """Flatten [N_STEPS, N_ENVS, ...] to [N_STEPS * N_ENVS, ...]"""
-        return array.reshape(-1, *array.shape[2:])
+            # update obs
+            self.obs = [self.split_observation(o) for o in next_obs]
 
-    def _prepare_rollout(
-        self, advantages: np.ndarray, returns: np.ndarray, rollout_buffer: TensorDict
-    ) -> TensorDict:
-        """Convert rollout buffer to flattened tensors ready for update"""
-        observations = self._flatten_rollout(rollout_buffer["observations"])
-        action_masks = self._flatten_rollout(rollout_buffer["action_masks"])
-        actions = self._flatten_rollout(rollout_buffer["actions"])
-        log_probs = self._flatten_rollout(rollout_buffer["log_probs"])
-        advantages = self._flatten_rollout(advantages)
-        returns = self._flatten_rollout(returns)
+        # --- stack time → [T, N] ---
+        rollout_td = torch.stack(rollout)
 
-        return TensorDict(
-            {
-                "observations": torch.tensor(observations, dtype=torch.float32),
-                "action_masks": torch.tensor(action_masks, dtype=torch.float32)
-                if action_masks is not None
-                else None,
-                "actions": torch.tensor(actions, dtype=torch.int64),
-                "old_log_probs": torch.tensor(log_probs, dtype=torch.float32),
-                "advantages": torch.tensor(advantages, dtype=torch.float32),
-                "returns": torch.tensor(returns, dtype=torch.float32),
-            }
-        )
-
-    def normalize_advantages(self, advantages: torch.Tensor) -> torch.Tensor:
-        return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        return rollout_td

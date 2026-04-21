@@ -1,37 +1,34 @@
 [project]
 name = "rl-tools"
-version = "0.1.0"
+version = "0.2.0"
 description = "A collection of tools for reinforcement learning in game environments."
 readme = "README.md"
 requires-python = ">=3.12"
+
 dependencies = [
     "msgpack>=1.1.2",
     "pre-commit>=4.5.1",
+    "tensorboard>=2.20.0",
     "tensordict>=0.11.0",
-]
-
-[project.optional-dependencies]
-torch-rocm = [
+    "ruff>=0.15.8",
+    "wandb>=0.25.1",
     "torch",
     "torchvision",
     "triton-rocm",
-]
-dev = [
-    "ruff>=0.15.8",
-]
-logging = [
-    "wandb>=0.25.1",
+    "setuptools>=82.0.1",
+    "protobuf>=6.33.6",
+    "grpcio>=1.80.0",
 ]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-rocm", extra = "torch-rocm" }]
-torchvision = [{ index = "pytorch-rocm", extra = "torch-rocm" }]
-triton-rocm = [{ index = "pytorch-rocm", extra = "torch-rocm" }]
+torch = [{ index = "pytorch-rocm" }]
+torchvision = [{ index = "pytorch-rocm" }]
+triton-rocm = [{ index = "pytorch-rocm" }]
 
 [[tool.uv.index]]
 name = "pytorch-rocm"
 url = "https://download.pytorch.org/whl/rocm7.1"
-explicit = true   # only used when explicitly referenced, not for all packages
+explicit = true
 
 [tool.uv.workspace]
 members = [

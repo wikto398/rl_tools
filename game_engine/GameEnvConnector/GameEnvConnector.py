@@ -149,8 +149,8 @@ class GameEnvConnector:
     def _reset_environment(self):
         """Reset the environment."""
         self.action_interface.send_action(b"RESET")
-        _ = self.observation_interface.get_observation()
-        message = self.observation_interface.get_raw_message()
-        if not message == b"RESET_ACK":
+        reset_ack = self.observation_interface.get_raw_message()
+        self.logger.debug(f"Received message after reset: {reset_ack}")
+        if not reset_ack == b"RESET_ACK":
             raise ConnectionError("Did not receive RESET_ACK from environment.")
         self.logger.info("Environment reset successfully.")
