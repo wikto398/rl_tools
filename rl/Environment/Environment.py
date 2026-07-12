@@ -16,5 +16,5 @@ class Environment:
     def step(
         self, action: np.ndarray
     ) -> tuple[dict[str, np.ndarray], float, bool, dict]:
-        obs, reward, done, info = self.env_connector.step(action)
+        obs, reward, done, info = self.env_connector.step(action.tolist())
         return obs, reward, done, info

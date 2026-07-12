@@ -115,7 +115,7 @@ class PolicyGradientAgent(RLAgent):
                 )
                 for obs in self.obs
             ]
-            next_value = torch.stack([td["value"] for td in next_td]).to(
+            next_value = torch.stack([td["value"].squeeze(-1) for td in next_td]).to(
                 self.device
             )  # [N_ENVS]
 
@@ -152,11 +152,13 @@ class PolicyGradientAgent(RLAgent):
 
                 td = TensorDict(
                     {
-                        "observations": obs["observation"],  # already TensorDict
-                        "action_masks": obs["action_mask"],
-                        "actions": forward_result["action"],
-                        "log_probs": forward_result["log_prob"],
-                        "values": forward_result["value"],
+                        "observations": obs["observation"].squeeze(
+                            0
+                        ),  # already TensorDict
+                        "action_masks": obs["action_mask"].squeeze(0),
+                        "actions": forward_result["action"].squeeze(0),
+                        "log_probs": forward_result["log_prob"].squeeze(0),
+                        "values": forward_result["value"].squeeze(-1),
                     },
                     batch_size=[],
                 )
