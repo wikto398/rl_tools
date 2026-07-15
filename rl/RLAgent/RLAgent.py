@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import logging
 
 import torch
@@ -55,6 +56,7 @@ class RLAgent(ABC):
         self.wandb = wandb
         self.logger = logger or logging.getLogger(__name__)
         self.tensorboard_writer = tensorboard_writer
+        self.thread_pool = ThreadPoolExecutor(max_workers=len(self.envs))
 
         self._initialize_obs()
 
@@ -85,9 +87,11 @@ class RLAgent(ABC):
     def update(self, *args, **kwargs):
         pass
 
-    @abstractmethod
     def get_action(self, obs: TensorDict) -> TensorDict:
-        pass
+        with torch.no_grad():
+            obs = obs.to(self.device)
+            result = self.network(obs["observation"], obs.get("action_mask", None))
+        return result
 
     def save(self, path: str):
         torch.save(
@@ -118,13 +122,12 @@ class RLAgent(ABC):
         action_mask_dict = obs.get("action_mask", None)
 
         observation = {
-            k: torch.tensor(v, dtype=torch.float32).unsqueeze(0)
-            for k, v in observation_dict.items()
+            k: torch.tensor(v, dtype=torch.float32) for k, v in observation_dict.items()
         }
 
         if action_mask_dict is not None:
             action_mask = {
-                k: torch.tensor(v, dtype=torch.bool).unsqueeze(0)
+                k: torch.tensor(v, dtype=torch.bool)
                 for k, v in action_mask_dict.items()
             }
         else:
@@ -132,12 +135,12 @@ class RLAgent(ABC):
 
         return TensorDict(
             {
-                "observation": TensorDict(observation, batch_size=[1]),
-                "action_mask": TensorDict(action_mask, batch_size=[1])
+                "observation": TensorDict(observation, batch_size=[]),
+                "action_mask": TensorDict(action_mask, batch_size=[])
                 if action_mask
                 else None,
             },
-            batch_size=[1],
+            batch_size=[],
         )
 
     def normalize_observation(self, obs: TensorDict) -> TensorDict:
@@ -149,3 +152,11 @@ class RLAgent(ABC):
         if self.reward_normalizer:
             reward = self.reward_normalizer.normalize(reward)
         return reward
+
+    def _step_env(self, env, action):
+        o, r, d, info = env.step(action)
+
+        if d:
+            o = env.reset()
+
+        return o, r, d, info
