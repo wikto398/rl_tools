@@ -29,6 +29,9 @@ class PPOAgent(PolicyGradientAgent):
         clip_epsilon: float = 0.2,
         observation_keys: list[str] | None = None,
         action_mask_keys: list[str] | None = None,
+        entropy_coef_decay_steps: int = 1_000_000,
+        entropy_coef_start: float = 0.7,
+        entropy_coef_end: float = 0.01,
         **kwargs,
     ):
         super().__init__(
@@ -51,6 +54,9 @@ class PPOAgent(PolicyGradientAgent):
             **kwargs,
         )
         self.clip_epsilon = clip_epsilon
+        self.entropy_coef_start = entropy_coef_start
+        self.entropy_coef_end = entropy_coef_end
+        self.entropy_coef_decay_steps = entropy_coef_decay_steps
 
     def clip_gradients(self, max_norm: float):
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm)
@@ -68,6 +74,11 @@ class PPOAgent(PolicyGradientAgent):
         entropy_losses = []
         clip_fractions = []
 
+        frac = min(self.global_step / self.entropy_coef_decay_steps, 1.0)
+        current_entropy_coef = self.entropy_coef_start + frac * (
+            self.entropy_coef_end - self.entropy_coef_start
+        )
+
         for epoch in range(self.epochs):
             indices = torch.randperm(full_batch.shape[0])
 
@@ -81,6 +92,9 @@ class PPOAgent(PolicyGradientAgent):
                 action_batch = batch["actions"]
                 old_log_probs_batch = batch["log_probs"].detach()
                 advantages_batch = batch["advantages"]
+                advantages_batch = (advantages_batch - advantages_batch.mean()) / (
+                    advantages_batch.std() + 1e-8
+                )
                 returns_batch = batch["returns"]
 
                 new_log_probs, new_values, entropy = self.evaluate(
@@ -103,7 +117,7 @@ class PPOAgent(PolicyGradientAgent):
                 loss = (
                     policy_loss
                     + self.value_loss_coef * value_loss
-                    + self.entropy_coef * entropy_loss
+                    + current_entropy_coef * entropy_loss
                 )
 
                 self.optimizer.zero_grad()
