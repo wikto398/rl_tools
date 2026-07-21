@@ -103,7 +103,8 @@ class PPOAgent(PolicyGradientAgent):
 
                 new_values = new_values.squeeze(-1)
 
-                ratio = torch.exp(new_log_probs - old_log_probs_batch)
+                log_ratio = (new_log_probs - old_log_probs_batch).clamp(-20.0, 20.0)
+                ratio = torch.exp(log_ratio)
                 unclipped = ratio * advantages_batch
                 clipped = (
                     torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
