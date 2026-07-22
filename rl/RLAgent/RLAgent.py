@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import os
+import random
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -116,18 +119,80 @@ class RLAgent(ABC):
         return result
 
     def save(self, path: str):
-        torch.save(
-            {
-                "network": self.network.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-            },
-            path,
-        )
+        payload = {
+            "network": self.network.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "global_step": self.global_step,
+            "update_steps": self.update_steps,
+            "torch_rng": torch.get_rng_state(),
+            "cuda_rng": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+            ),
+            "numpy_rng": np.random.get_state(),
+            "python_rng": random.getstate(),
+            "observation_normalizer": (
+                self.observation_normalizer.state_dict()
+                if self.observation_normalizer is not None
+                else None
+            ),
+            "reward_normalizer": (
+                self.reward_normalizer.state_dict()
+                if self.reward_normalizer is not None
+                else None
+            ),
+        }
+        path_obj = Path(path)
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path_obj.with_suffix(path_obj.suffix + ".tmp")
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, path_obj)
 
-    def load(self, path: str):
-        checkpoint = torch.load(path)
+    def load(
+        self,
+        path: str,
+        *,
+        load_optimizer: bool = True,
+        load_rng: bool = True,
+    ) -> None:
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        if "network" not in checkpoint:
+            raise KeyError(f"Checkpoint missing 'network' key: {path}")
         self.network.load_state_dict(checkpoint["network"])
-        self.optimizer.load_state_dict(checkpoint["optimizer"])
+
+        if load_optimizer and "optimizer" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+
+        if "global_step" in checkpoint:
+            self.global_step = int(checkpoint["global_step"])
+        if "update_steps" in checkpoint:
+            self.update_steps = int(checkpoint["update_steps"])
+
+        if load_rng:
+            if "torch_rng" in checkpoint and checkpoint["torch_rng"] is not None:
+                torch.set_rng_state(checkpoint["torch_rng"])
+            if (
+                "cuda_rng" in checkpoint
+                and checkpoint["cuda_rng"] is not None
+                and torch.cuda.is_available()
+            ):
+                torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
+            if "numpy_rng" in checkpoint and checkpoint["numpy_rng"] is not None:
+                np.random.set_state(checkpoint["numpy_rng"])
+            if "python_rng" in checkpoint and checkpoint["python_rng"] is not None:
+                random.setstate(checkpoint["python_rng"])
+
+        obs_state = checkpoint.get("observation_normalizer")
+        if obs_state is not None and self.observation_normalizer is not None:
+            self.observation_normalizer.load_state_dict(obs_state)
+
+        reward_state = checkpoint.get("reward_normalizer")
+        if reward_state is not None and self.reward_normalizer is not None:
+            self.reward_normalizer.load_state_dict(reward_state)
+
+        self.info(
+            f"Loaded checkpoint from {path} "
+            f"(global_step={self.global_step}, update_steps={self.update_steps})"
+        )
 
     def set_eval_mode(self, eval_mode: bool):
         if eval_mode:

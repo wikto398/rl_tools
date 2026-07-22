@@ -43,4 +43,32 @@ class RLArgsParser:
             action="store_true",
             help="Enable rendering of the game environment (if supported by the game engine)",
         )
+        parser.add_argument(
+            "--iterations",
+            type=int,
+            default=1000,
+            help="Number of training iterations to run (additional iterations when resuming)",
+        )
+        parser.add_argument(
+            "--checkpoint",
+            type=str,
+            default=None,
+            help="Path to a checkpoint .pt file to load before training",
+        )
+        parser.add_argument(
+            "--save_every_updates",
+            type=int,
+            default=None,
+            help="If set, also write a latest checkpoint every N completed updates",
+        )
+        parser.add_argument(
+            "--no_load_optimizer",
+            action="store_true",
+            help="When loading --checkpoint, skip optimizer state",
+        )
+        parser.add_argument(
+            "--no_load_rng",
+            action="store_true",
+            help="When loading --checkpoint, skip RNG states",
+        )
         return parser.parse_args()

@@ -51,22 +51,24 @@ class PolicyGradientAgent(RLAgent):
     def train(self, iterations: int, *args, **kwargs):
         self._stop_requested = False
         self.callback.on_train_start()
-        for iteration in range(iterations):
-            if self._stop_requested:
-                break
-            self.callback.on_rollout_start()
-            rollout_buffer = self.collect_rollouts()
-            self.global_step += self.rollout_size * len(self.envs)
-            self.update_steps += 1
-            self.logger.debug(f"Collected rollout with {len(rollout_buffer)} steps")
-            self.callback.on_rollout_end(rollout_buffer)
-            if self._stop_requested:
-                break
-            rollout_buffer = self.compute_gae(rollout_buffer=rollout_buffer)
-            self.logger.debug("Computed GAE advantages and returns for rollout")
-            self.callback.on_update_start(rollout_buffer)
-            self.update(rollout_buffer, *args, **kwargs)
-        self.callback.on_train_end()
+        try:
+            for iteration in range(iterations):
+                if self._stop_requested:
+                    break
+                self.callback.on_rollout_start()
+                rollout_buffer = self.collect_rollouts()
+                self.global_step += self.rollout_size * len(self.envs)
+                self.update_steps += 1
+                self.logger.debug(f"Collected rollout with {len(rollout_buffer)} steps")
+                self.callback.on_rollout_end(rollout_buffer)
+                if self._stop_requested:
+                    break
+                rollout_buffer = self.compute_gae(rollout_buffer=rollout_buffer)
+                self.logger.debug("Computed GAE advantages and returns for rollout")
+                self.callback.on_update_start(rollout_buffer)
+                self.update(rollout_buffer, *args, **kwargs)
+        finally:
+            self.callback.on_train_end()
 
     @abstractmethod
     def update(
