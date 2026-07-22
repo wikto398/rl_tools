@@ -44,18 +44,35 @@ class RLInitializer:
             CONFIG.INSTANCES = args.instances
         self.connectors: list[GameEnvConnector] = []
 
-    def start_instances(self) -> list[GameEnvConnector]:
-        """Start all instances and return their connectors for the agent to use."""
-        for i in range(CONFIG.INSTANCES):
-            self.main_logger.info(f"Starting instance {i}...")
+    def start_instances(
+        self,
+        n: int | None = None,
+        *,
+        id_offset: int = 0,
+        render: bool | None = None,
+        role: str = "train",
+    ) -> list[GameEnvConnector]:
+        """Start n instances and return the newly started connectors."""
+        count = self.args.instances if n is None else n
+        if count < 1:
+            raise ValueError(f"n must be at least 1, got {count}")
+        if role not in ("train", "eval"):
+            raise ValueError(f"role must be 'train' or 'eval', got {role!r}")
+        started: list[GameEnvConnector] = []
+        for i in range(count):
+            instance_id = id_offset + i
+            self.main_logger.info(f"Starting {role} instance {instance_id}...")
             connector = start_instance(
-                instance_id=i,
+                instance_id=instance_id,
                 args=self.args,
                 log_path=self.log_path,
+                render=render,
+                role=role,
             )
             self.connectors.append(connector)
-            self.main_logger.info(f"Instance {i} connected and ready")
-        return self.connectors
+            started.append(connector)
+            self.main_logger.info(f"Instance {instance_id} connected and ready")
+        return started
 
     def stop_instances(self):
         """Disconnect all instances cleanly."""
@@ -69,7 +86,9 @@ class RLInitializer:
         self.connectors.clear()
 
 
-def setup_instance_logger(instance_id: int, log_path: str) -> logging.Logger:
+def setup_instance_logger(
+    instance_id: int, log_path: str, *, role: str = "train"
+) -> logging.Logger:
     logger = logging.getLogger(f"Instance-{instance_id}")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
@@ -77,8 +96,9 @@ def setup_instance_logger(instance_id: int, log_path: str) -> logging.Logger:
     if logger.handlers:
         logger.handlers.clear()
 
-    os.makedirs(log_path, exist_ok=True)
-    log_file = f"{log_path}/game_connector_instance_{instance_id}.log"
+    connector_dir = os.path.join(log_path, role, "game_connector")
+    os.makedirs(connector_dir, exist_ok=True)
+    log_file = os.path.join(connector_dir, f"instance_{instance_id}.log")
 
     formatter = logging.Formatter(
         fmt="[%(levelname)s] | %(asctime)s | %(name)s | %(message)s",
@@ -96,9 +116,11 @@ def start_instance(
     instance_id: int = 0,
     args: argparse.Namespace | None = None,
     log_path: str = "logs",
+    render: bool | None = None,
+    role: str = "train",
 ) -> GameEnvConnector:
     """Start a single instance, connect it, and return the connector."""
-    logger = setup_instance_logger(instance_id, log_path)
+    logger = setup_instance_logger(instance_id, log_path, role=role)
     logger.info(f"Starting instance {instance_id} with args: {args}")
 
     observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id
@@ -122,6 +144,13 @@ def start_instance(
     if args:
         for key, value in vars(args).items():
             game_engine_kwargs[key] = value
+    if render is not None:
+        game_engine_kwargs["render"] = render
+    elif args is not None and hasattr(args, "render"):
+        game_engine_kwargs["render"] = bool(args.render)
+
+    engine_log_dir = os.path.join(log_path, role, "headless_game_engine")
+    os.makedirs(engine_log_dir, exist_ok=True)
 
     connector = GameEnvConnector(
         instance_id=instance_id,
@@ -133,7 +162,7 @@ def start_instance(
         game_engine_args=None,
         game_engine_kwargs=game_engine_kwargs,
         logger=logger,
-        log_path=log_path,
+        log_path=engine_log_dir,
     )
 
     connector.connect()

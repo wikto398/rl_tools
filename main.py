@@ -57,7 +57,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def setup_instance_logger(instance_id: int) -> logging.Logger:
+def setup_instance_logger(
+    instance_id: int, log_path: str, *, role: str = "train"
+) -> logging.Logger:
     logger = logging.getLogger(f"Instance-{instance_id}")
     logger.setLevel(logging.DEBUG)
     logger.propagate = (
@@ -68,9 +70,9 @@ def setup_instance_logger(instance_id: int) -> logging.Logger:
     if logger.handlers:
         logger.handlers.clear()
 
-    os.makedirs("logs", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = f"logs/{timestamp}/game_connector_instance_{instance_id}.log"
+    connector_dir = os.path.join(log_path, role, "game_connector")
+    os.makedirs(connector_dir, exist_ok=True)
+    log_file = os.path.join(connector_dir, f"instance_{instance_id}.log")
 
     formatter = logging.Formatter(
         fmt="[%(levelname)s] | %(asctime)s | %(name)s | %(message)s",
@@ -78,19 +80,22 @@ def setup_instance_logger(instance_id: int) -> logging.Logger:
     )
 
     # File handler — per instance
-    file_handler = logging.FileHandler(log_path)
+    file_handler = logging.FileHandler(log_file)
     file_handler.setFormatter(formatter)
 
     logger.addHandler(file_handler)
-    # logger.addHandler(console_handler)
 
     return logger
 
 
 def start_instance(
-    instance_id: int = 0, args: argparse.Namespace | None = None, log_path=None
+    instance_id: int = 0,
+    args: argparse.Namespace | None = None,
+    log_path=None,
+    role: str = "train",
 ) -> GameEnvConnector:
-    logger = setup_instance_logger(instance_id)
+    run_log_path = log_path or "logs"
+    logger = setup_instance_logger(instance_id, run_log_path, role=role)
     logger.info(f"Starting instance {instance_id} with args: {args}")
     observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id
     action_port = CONFIG.ACTION_RECEIVER_PORT + instance_id
@@ -105,6 +110,8 @@ def start_instance(
     }
     for key, value in vars(args).items():
         game_engine_kwargs[key] = value
+    engine_log_dir = os.path.join(run_log_path, role, "headless_game_engine")
+    os.makedirs(engine_log_dir, exist_ok=True)
     game_env_connector = GameEnvConnector(
         instance_id=instance_id,
         action_interface=udp_action_sender,
@@ -115,7 +122,7 @@ def start_instance(
         game_engine_args=None,
         game_engine_kwargs=game_engine_kwargs,
         logger=logger,
-        log_path=log_path,
+        log_path=engine_log_dir,
     )
     game_env_connector.connect()
     for step in range(10):
@@ -166,7 +173,12 @@ def main():
     for i in range(CONFIG.INSTANCES):
         p = mp.Process(
             target=start_instance,
-            kwargs={"instance_id": i, "args": args, "log_path": log_path},
+            kwargs={
+                "instance_id": i,
+                "args": args,
+                "log_path": log_path,
+                "role": "train",
+            },
         )
         p.start()
         instances.append(p)

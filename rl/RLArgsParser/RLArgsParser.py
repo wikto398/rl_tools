@@ -41,7 +41,30 @@ class RLArgsParser:
         parser.add_argument(
             "--render",
             action="store_true",
-            help="Enable rendering of the game environment (if supported by the game engine)",
+            help="Enable rendering for training (and eval) Godot instances",
+        )
+        parser.add_argument(
+            "--render_eval",
+            action="store_true",
+            help="Enable rendering for eval Godot instances only",
+        )
+        parser.add_argument(
+            "--eval_every_timesteps",
+            type=int,
+            default=None,
+            help="Run evaluation every N global timesteps (disabled if omitted)",
+        )
+        parser.add_argument(
+            "--eval_instances",
+            type=int,
+            default=1,
+            help="Number of dedicated Godot instances used for evaluation",
+        )
+        parser.add_argument(
+            "--eval_episodes",
+            type=int,
+            default=5,
+            help="Number of full episodes to average per evaluation",
         )
         parser.add_argument(
             "--iterations",

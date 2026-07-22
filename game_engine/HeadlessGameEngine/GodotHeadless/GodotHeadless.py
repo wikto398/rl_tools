@@ -1,3 +1,4 @@
+import os
 import subprocess
 from os import path
 
@@ -35,11 +36,11 @@ class GodotHeadless(HeadlessGameEngine):
             command.append("--headless")
         try:
             print("Godot headless game engine command:", " ".join(command))
+            os.makedirs(self.log_path, exist_ok=True)
             with open(path.join(self.log_path, self.log_file_name), "w") as log_file:
                 self.process = subprocess.Popen(
                     command, stdout=log_file, stderr=subprocess.STDOUT
                 )
-            # self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             print("Godot headless game engine started successfully.")
         except Exception as e:
             print(f"Failed to start Godot headless game engine: {e}")

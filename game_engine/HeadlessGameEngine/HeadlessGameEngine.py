@@ -25,9 +25,7 @@ class HeadlessGameEngine(ABC):
         self.project_path = project_path if project_path else "."
         self.log_path = log_path if log_path else "logs"
         self.log_file_name = (
-            log_file_name
-            if log_file_name
-            else f"headless_game_engine_{self.instance_id}.log"
+            log_file_name if log_file_name else f"instance_{self.instance_id}.log"
         )
         self.kwargs = kwargs
         self.process: subprocess.Popen
