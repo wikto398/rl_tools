@@ -15,7 +15,7 @@ dependencies = [
     "torch",
     "torchvision",
     "triton-rocm",
-    "setuptools>=82.0.1",
+    "setuptools<81",
     "protobuf>=6.33.6",
     "grpcio>=1.80.0",
 ]

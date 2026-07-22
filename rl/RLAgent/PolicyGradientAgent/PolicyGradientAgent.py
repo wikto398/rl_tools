@@ -49,14 +49,24 @@ class PolicyGradientAgent(RLAgent):
         self.rollout_size = rollout_size
 
     def train(self, iterations: int, *args, **kwargs):
+        self._stop_requested = False
+        self.callback.on_train_start()
         for iteration in range(iterations):
+            if self._stop_requested:
+                break
+            self.callback.on_rollout_start()
             rollout_buffer = self.collect_rollouts()
             self.global_step += self.rollout_size * len(self.envs)
             self.update_steps += 1
             self.logger.debug(f"Collected rollout with {len(rollout_buffer)} steps")
+            self.callback.on_rollout_end(rollout_buffer)
+            if self._stop_requested:
+                break
             rollout_buffer = self.compute_gae(rollout_buffer=rollout_buffer)
             self.logger.debug("Computed GAE advantages and returns for rollout")
+            self.callback.on_update_start(rollout_buffer)
             self.update(rollout_buffer, *args, **kwargs)
+        self.callback.on_train_end()
 
     @abstractmethod
     def update(
@@ -138,6 +148,9 @@ class PolicyGradientAgent(RLAgent):
         rollout = []
 
         for _ in range(self.rollout_size):
+            if self._stop_requested:
+                break
+
             batch_obs = torch.stack(self.obs)
             forward_results = self.get_action(batch_obs)
 
@@ -155,6 +168,7 @@ class PolicyGradientAgent(RLAgent):
             next_obs = []
             rewards = []
             dones = []
+            infos = []
 
             actions = [
                 step_td["actions"][i].cpu().numpy() for i in range(len(self.envs))
@@ -168,21 +182,28 @@ class PolicyGradientAgent(RLAgent):
                 )
             )
 
-            for o, r, d, _ in results:
+            for o, r, d, info in results:
                 next_obs.append(o)
                 rewards.append(r)
                 dones.append(d)
+                infos.append(info if info is not None else {})
 
-            # add rewards/dones to step TensorDict
             step_td["rewards"] = torch.tensor(rewards, dtype=torch.float32)
             step_td["dones"] = torch.tensor(dones, dtype=torch.bool)
 
             rollout.append(step_td)
 
-            # update obs
             self.obs = [self.split_observation(o) for o in next_obs]
 
-        # --- stack time → [T, N] ---
+            if not self.callback.on_step(
+                actions=step_td["actions"],
+                rewards=rewards,
+                dones=dones,
+                infos=infos,
+            ):
+                self._stop_requested = True
+                break
+
         rollout_td = torch.stack(rollout)
 
         return rollout_td

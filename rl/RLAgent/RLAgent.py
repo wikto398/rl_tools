@@ -1,18 +1,20 @@
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 import logging
+from typing import Any
 
-import torch
-from torch.utils.tensorboard.writer import SummaryWriter
-import wandb
 import numpy as np
-from abc import ABC, abstractmethod
+import torch
 from tensordict import TensorDict
+from torch.utils.tensorboard.writer import SummaryWriter
+import wandb as wandb_lib
 
-from rl_tools.rl.Environment import Environment
 from rl_tools.game_engine.ObservationNormalizer import (
     ObservationNormalizer,
 )
 from rl_tools.game_engine.RewardNormalizer import RewardNormalizer
+from rl_tools.rl.Callback import Callback, NoOpCallback
+from rl_tools.rl.Environment import Environment
 
 
 class RLAgent(ABC):
@@ -24,9 +26,10 @@ class RLAgent(ABC):
         reward_normalizer: RewardNormalizer | None = None,
         observation_normalizer: ObservationNormalizer | None = None,
         device: torch.device | None = None,
-        wandb: wandb.Run | None = None,
+        wandb: wandb_lib.Run | None = None,
         logger: logging.Logger | None = None,
         tensorboard_writer: SummaryWriter | None = None,
+        callback: Callback | None = None,
         *args,
         gamma: float = 0.99,
         lam: float = 0.95,
@@ -53,10 +56,13 @@ class RLAgent(ABC):
 
         self.global_step = 0
         self.update_steps = 0
+        self._stop_requested = False
         self.wandb = wandb
         self.logger = logger or logging.getLogger(__name__)
         self.tensorboard_writer = tensorboard_writer
         self.thread_pool = ThreadPoolExecutor(max_workers=len(self.envs))
+        self.callback = callback or NoOpCallback()
+        self.callback.setup(self)
 
         self._initialize_obs()
 
@@ -66,6 +72,22 @@ class RLAgent(ABC):
         if self.tensorboard_writer:
             self.tensorboard_writer.add_scalar(key, value, global_step=self.global_step)
         self.logger.info(f"Step {self.global_step}: {key} = {value}")
+
+    def log_histogram(self, key: str, values: Any, bins: str | int = "auto"):
+        if isinstance(values, torch.Tensor):
+            values = values.detach().cpu().numpy()
+        values = np.asarray(values).ravel()
+        if values.size == 0:
+            return
+        if self.tensorboard_writer:
+            self.tensorboard_writer.add_histogram(
+                key, values, global_step=self.global_step, bins=bins
+            )
+        if self.wandb:
+            self.wandb.log(
+                {key: wandb_lib.Histogram(values)},
+                step=self.global_step,
+            )
 
     def info(self, message: str):
         self.logger.info(message)
