@@ -41,6 +41,7 @@ class EvalCallback(Callback):
         self.max_episode_steps = max_episode_steps
         self.log_prefix = log_prefix
         self._last_eval_step = 0
+        self._eval_run_index = 0
         self._pool = ThreadPoolExecutor(max_workers=len(self.envs))
 
     def on_train_start(self) -> None:
@@ -108,7 +109,17 @@ class EvalCallback(Callback):
         agent = self.agent
         n_envs = len(self.envs)
 
-        raw_obs = [env.reset() for env in self.envs]
+        start_seeds: list[int | None] = []
+        raw_obs = []
+        for env in self.envs:
+            env.episode_index = 0
+            start_seeds.append(env.next_seed())
+            raw_obs.append(env.reset(restart_sequence=True))
+        agent.info(
+            f"EvalCallback: eval start seeds={start_seeds} "
+            f"(run_index={self._eval_run_index})"
+        )
+        self._eval_run_index += 1
         obs = [agent.split_observation(o) for o in raw_obs]
         ep_ret = [0.0] * n_envs
         ep_len = [0] * n_envs
@@ -138,7 +149,6 @@ class EvalCallback(Callback):
                         o = self.envs[i].reset()
                     if len(returns) >= self.n_episodes:
                         next_obs.append(agent.split_observation(o))
-                        # drain remaining slots with current obs shape
                         for j in range(i + 1, n_envs):
                             next_obs.append(obs[j])
                         break

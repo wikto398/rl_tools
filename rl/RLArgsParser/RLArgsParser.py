@@ -94,4 +94,13 @@ class RLArgsParser:
             action="store_true",
             help="When loading --checkpoint, skip RNG states",
         )
+        parser.add_argument(
+            "--seed",
+            type=int,
+            default=None,
+            help=(
+                "Train map seed base: env i episode e uses seed+i+e*n_train. "
+                "Eval uses negative decreasing seeds -(1+j+e*n_eval)."
+            ),
+        )
         return parser.parse_args()

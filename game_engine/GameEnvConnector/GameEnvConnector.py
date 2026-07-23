@@ -95,9 +95,12 @@ class GameEnvConnector:
         obs, reward, done, info = self._split_observation(observation)
         return obs, reward, done, info
 
-    def reset(self) -> dict:
-        self.logger.info("Resetting environment...")
-        self._reset_environment()
+    def reset(self, seed: int | None = None) -> dict:
+        if seed is None:
+            self.logger.info("Resetting environment...")
+        else:
+            self.logger.info(f"Resetting environment with seed={seed}...")
+        self._reset_environment(seed=seed)
         observation = self._get_observation()
         obs, _, _, _ = self._split_observation(observation)
         return obs
@@ -146,9 +149,12 @@ class GameEnvConnector:
         self.action_interface.send_action(action)
 
     @retry
-    def _reset_environment(self):
-        """Reset the environment."""
-        self.action_interface.send_action(b"RESET")
+    def _reset_environment(self, seed: int | None = None):
+        """Reset the environment. Optional seed becomes RESET:<seed> for map RNG."""
+        if seed is None:
+            self.action_interface.send_action(b"RESET")
+        else:
+            self.action_interface.send_action(f"RESET:{int(seed)}".encode())
         reset_ack = self.observation_interface.get_raw_message()
         self.logger.debug(f"Received message after reset: {reset_ack}")
         if not reset_ack == b"RESET_ACK":

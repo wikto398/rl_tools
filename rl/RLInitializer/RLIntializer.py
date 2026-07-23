@@ -64,6 +64,7 @@ class RLInitializer:
             self.main_logger.info(f"Starting {role} instance {instance_id}...")
             connector = start_instance(
                 instance_id=instance_id,
+                local_index=i,
                 args=self.args,
                 log_path=self.log_path,
                 render=render,
@@ -114,6 +115,7 @@ def setup_instance_logger(
 
 def start_instance(
     instance_id: int = 0,
+    local_index: int = 0,
     args: argparse.Namespace | None = None,
     log_path: str = "logs",
     render: bool | None = None,
@@ -143,11 +145,21 @@ def start_instance(
     }
     if args:
         for key, value in vars(args).items():
+            if value is None:
+                continue
             game_engine_kwargs[key] = value
     if render is not None:
         game_engine_kwargs["render"] = render
     elif args is not None and hasattr(args, "render"):
         game_engine_kwargs["render"] = bool(args.render)
+    # Boot map = episode 0 of the role's seed stream.
+    base_seed = getattr(args, "seed", None) if args is not None else None
+    if role == "train" and base_seed is not None:
+        game_engine_kwargs["seed"] = int(base_seed) + int(local_index)
+    elif role == "eval":
+        game_engine_kwargs["seed"] = -(1 + int(local_index))
+    else:
+        game_engine_kwargs.pop("seed", None)
 
     engine_log_dir = os.path.join(log_path, role, "headless_game_engine")
     os.makedirs(engine_log_dir, exist_ok=True)
