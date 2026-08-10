@@ -9,12 +9,24 @@ class RewardNormalizer(ABC):
         super().__init__()
         self.kwargs = kwargs
 
-    def normalize(self, reward: np.ndarray) -> np.ndarray:
-        """Normalize the reward if necessary."""
-        return self._normalize(reward)
+    def normalize(
+        self,
+        reward: np.ndarray,
+        dones: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Normalize the reward if necessary.
+
+        ``dones`` marks episode boundaries (one entry per env in the same order
+        as ``reward``); normalizers may use it to update episodic statistics.
+        """
+        return self._normalize(reward, dones)
 
     @abstractmethod
-    def _normalize(self, reward: np.ndarray) -> np.ndarray:
+    def _normalize(
+        self,
+        reward: np.ndarray,
+        dones: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Normalize the reward if necessary."""
         pass
 

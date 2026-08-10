@@ -103,4 +103,25 @@ class RLArgsParser:
                 "Eval uses negative decreasing seeds -(1+j+e*n_eval)."
             ),
         )
+        parser.add_argument(
+            "--tensorboard_port",
+            type=int,
+            default=0,
+            help="Port to serve TensorBoard on (0 = disabled)",
+        )
+        parser.add_argument(
+            "--no_obs_norm",
+            action="store_true",
+            help="Disable RunningMeanStd observation normalization (on by default)",
+        )
+        parser.add_argument(
+            "--no_reward_norm",
+            action="store_true",
+            help="Disable RunningMeanStd reward normalization (on by default)",
+        )
+        parser.add_argument(
+            "--quiet",
+            action="store_true",
+            help="Only print ERROR logs to console and files; info/metrics go to TensorBoard only",
+        )
         return parser.parse_args()

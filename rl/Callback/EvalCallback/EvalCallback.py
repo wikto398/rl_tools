@@ -87,7 +87,7 @@ class EvalCallback(Callback):
         )
         agent.set_eval_mode(True)
         try:
-            returns, lengths = self._collect_episodes()
+            returns, lengths, wins, infos = self._collect_episodes()
         finally:
             agent.set_eval_mode(False)
 
@@ -97,14 +97,72 @@ class EvalCallback(Callback):
 
         returns_arr = np.asarray(returns[: self.n_episodes], dtype=np.float64)
         lengths_arr = np.asarray(lengths[: self.n_episodes], dtype=np.float64)
+        wins_arr = np.asarray(wins[: self.n_episodes], dtype=bool)
+        infos = infos[: self.n_episodes]
         prefix = self.log_prefix
         agent.log(f"{prefix}/mean_return", float(returns_arr.mean()))
         if returns_arr.size > 1:
             agent.log(f"{prefix}/std_return", float(returns_arr.std()))
         agent.log(f"{prefix}/mean_length", float(lengths_arr.mean()))
         agent.log(f"{prefix}/n_episodes", float(returns_arr.size))
+        n_wins = int(wins_arr.sum())
+        agent.log(f"{prefix}/n_wins", float(n_wins))
+        agent.log(f"{prefix}/win_rate", n_wins / wins_arr.size)
 
-    def _collect_episodes(self) -> tuple[list[float], list[int]]:
+        # Summary-based stats only for episodes that ended via the game terminal
+        # (truncated episodes carry no reward_breakdown).
+        valid = [info for info in infos if info.get("reward_breakdown")]
+        if not valid:
+            return
+        n_valid = len(valid)
+
+        win_turns = [
+            float(info["turns"])
+            for info in valid
+            if info.get("won") and info.get("turns") is not None
+        ]
+        loss_turns = [
+            float(info["turns"])
+            for info in valid
+            if info.get("lost") and info.get("turns") is not None
+        ]
+        if win_turns:
+            agent.log(f"{prefix}/mean_win_turns", float(np.mean(win_turns)))
+        if loss_turns:
+            agent.log(f"{prefix}/mean_loss_turns", float(np.mean(loss_turns)))
+
+        breakdown_totals: dict[str, float] = {}
+        for info in valid:
+            for key, value in info.get("reward_breakdown", {}).items():
+                breakdown_totals[key] = breakdown_totals.get(key, 0.0) + float(value)
+        for key, value in sorted(breakdown_totals.items()):
+            agent.log(f"{prefix}/breakdown/{key}", value / n_valid)
+
+        for field in ("buildings_started", "buildings_completed"):
+            totals: dict[str, float] = {}
+            for info in valid:
+                for key, value in info.get(field, {}).items():
+                    totals[key] = totals.get(key, 0.0) + float(value)
+            for key, value in sorted(totals.items()):
+                agent.log(f"{prefix}/{field}/{key}", value / n_valid)
+
+        population = [float(info.get("population", 0.0)) for info in valid]
+        working_population = [
+            float(info.get("working_population", 0.0)) for info in valid
+        ]
+        total_resources = [float(info.get("total_resources", 0.0)) for info in valid]
+        production = [float(sum(info.get("production", []) or [])) for info in valid]
+        agent.log(f"{prefix}/mean_end_population", float(np.mean(population)))
+        agent.log(
+            f"{prefix}/mean_end_working_population",
+            float(np.mean(working_population)),
+        )
+        agent.log(f"{prefix}/mean_end_total_resources", float(np.mean(total_resources)))
+        agent.log(f"{prefix}/mean_end_production", float(np.mean(production)))
+
+    def _collect_episodes(
+        self,
+    ) -> tuple[list[float], list[int], list[bool], list[dict]]:
         assert self.agent is not None
         agent = self.agent
         n_envs = len(self.envs)
@@ -125,6 +183,8 @@ class EvalCallback(Callback):
         ep_len = [0] * n_envs
         returns: list[float] = []
         lengths: list[int] = []
+        wins: list[bool] = []
+        infos: list[dict] = []
 
         while len(returns) < self.n_episodes:
             batch_obs = torch.stack(obs)
@@ -136,13 +196,15 @@ class EvalCallback(Callback):
             results = list(self._pool.map(self._step_env, self.envs, actions))
 
             next_obs: list[TensorDict] = []
-            for i, (o, reward, done, _info) in enumerate(results):
+            for i, (o, reward, done, info) in enumerate(results):
                 ep_ret[i] += float(reward)
                 ep_len[i] += 1
                 finished = bool(done) or ep_len[i] >= self.max_episode_steps
                 if finished:
                     returns.append(ep_ret[i])
                     lengths.append(ep_len[i])
+                    wins.append(bool(info.get("won", False)))
+                    infos.append(info if info is not None else {})
                     ep_ret[i] = 0.0
                     ep_len[i] = 0
                     if not done:
@@ -159,7 +221,7 @@ class EvalCallback(Callback):
             obs = next_obs
             break
 
-        return returns, lengths
+        return returns, lengths, wins, infos
 
     @staticmethod
     def _step_env(

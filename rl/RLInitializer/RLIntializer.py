@@ -17,10 +17,16 @@ class RLInitializer:
         self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.log_path = f"logs/{self.timestamp}"
         os.makedirs(self.log_path, exist_ok=True)
-        logging.basicConfig(
-            level=getattr(logging, args.log_level)
+        self.quiet = bool(getattr(args, "quiet", False))
+        console_level = (
+            logging.ERROR
+            if self.quiet
+            else getattr(logging, args.log_level)
             if hasattr(logging, args.log_level)
-            else logging.DEBUG,
+            else logging.DEBUG
+        )
+        logging.basicConfig(
+            level=console_level,
             format="%(asctime)s - %(levelname)s - %(message)s",
         )
         self.main_logger = logging.getLogger("Main")
@@ -88,10 +94,10 @@ class RLInitializer:
 
 
 def setup_instance_logger(
-    instance_id: int, log_path: str, *, role: str = "train"
+    instance_id: int, log_path: str, *, role: str = "train", quiet: bool = False
 ) -> logging.Logger:
     logger = logging.getLogger(f"Instance-{instance_id}")
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.ERROR if quiet else logging.DEBUG)
     logger.propagate = False
 
     if logger.handlers:
@@ -122,7 +128,8 @@ def start_instance(
     role: str = "train",
 ) -> GameEnvConnector:
     """Start a single instance, connect it, and return the connector."""
-    logger = setup_instance_logger(instance_id, log_path, role=role)
+    quiet = bool(args is not None and getattr(args, "quiet", False))
+    logger = setup_instance_logger(instance_id, log_path, role=role, quiet=quiet)
     logger.info(f"Starting instance {instance_id} with args: {args}")
 
     observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id
@@ -152,6 +159,8 @@ def start_instance(
         game_engine_kwargs["render"] = render
     elif args is not None and hasattr(args, "render"):
         game_engine_kwargs["render"] = bool(args.render)
+    if quiet:
+        game_engine_kwargs["log_level"] = "ERROR"
     # Boot map = episode 0 of the role's seed stream.
     base_seed = getattr(args, "seed", None) if args is not None else None
     if role == "train" and base_seed is not None:

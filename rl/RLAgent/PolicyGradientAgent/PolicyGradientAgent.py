@@ -1,5 +1,6 @@
 from tensordict import TensorDict
 import torch
+import numpy as np
 
 from abc import abstractmethod
 
@@ -15,8 +16,8 @@ class PolicyGradientAgent(RLAgent):
     def __init__(
         self,
         network: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
         envs: list[Environment] | Environment,
+        optimizer: torch.optim.Optimizer | None = None,
         reward_normalizer: RewardNormalizer | None = None,
         observation_normalizer: ObservationNormalizer | None = None,
         device: torch.device | None = None,
@@ -49,6 +50,8 @@ class PolicyGradientAgent(RLAgent):
         self.rollout_size = rollout_size
 
     def train(self, iterations: int, *args, **kwargs):
+        if self.optimizer is None:
+            raise RuntimeError("optimizer is required for training")
         self._stop_requested = False
         self.callback.on_train_start()
         try:
@@ -63,6 +66,12 @@ class PolicyGradientAgent(RLAgent):
                 self.callback.on_rollout_end(rollout_buffer)
                 if self._stop_requested:
                     break
+                if self.observation_normalizer is not None:
+                    self.observation_normalizer.update(rollout_buffer["observations"])
+                if self.reward_normalizer is not None and hasattr(
+                    self.reward_normalizer, "scale"
+                ):
+                    self.log("reward/norm_scale", self.reward_normalizer.scale)
                 rollout_buffer = self.compute_gae(rollout_buffer=rollout_buffer)
                 self.logger.debug("Computed GAE advantages and returns for rollout")
                 self.callback.on_update_start(rollout_buffer)
@@ -114,8 +123,10 @@ class PolicyGradientAgent(RLAgent):
         with torch.no_grad():
             batch_obs = torch.stack(self.obs).to(self.device)
 
+            next_obs = self.normalize_observation(batch_obs["observation"])
+
             next_td = self.network(
-                batch_obs["observation"],
+                next_obs,
                 batch_obs.get("action_mask", None),
             )
 
@@ -190,7 +201,13 @@ class PolicyGradientAgent(RLAgent):
                 dones.append(d)
                 infos.append(info if info is not None else {})
 
-            step_td["rewards"] = torch.tensor(rewards, dtype=torch.float32)
+            step_td["rewards"] = torch.tensor(
+                self.normalize_reward(
+                    np.asarray(rewards, dtype=np.float32),
+                    np.asarray(dones, dtype=np.bool_),
+                ),
+                dtype=torch.float32,
+            )
             step_td["dones"] = torch.tensor(dones, dtype=torch.bool)
 
             rollout.append(step_td)

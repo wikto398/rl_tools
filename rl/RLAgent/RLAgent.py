@@ -24,8 +24,8 @@ class RLAgent(ABC):
     def __init__(
         self,
         network: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
         envs: list[Environment] | Environment,
+        optimizer: torch.optim.Optimizer | None = None,
         reward_normalizer: RewardNormalizer | None = None,
         observation_normalizer: ObservationNormalizer | None = None,
         device: torch.device | None = None,
@@ -115,13 +115,17 @@ class RLAgent(ABC):
     def get_action(self, obs: TensorDict) -> TensorDict:
         with torch.no_grad():
             obs = obs.to(self.device)
-            result = self.network(obs["observation"], obs.get("action_mask", None))
+            action_mask = obs.get("action_mask", None)
+            obs = self.normalize_observation(obs["observation"])
+            result = self.network(obs, action_mask)
         return result
 
     def save(self, path: str):
         payload = {
             "network": self.network.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": self.optimizer.state_dict()
+            if self.optimizer is not None
+            else None,
             "global_step": self.global_step,
             "update_steps": self.update_steps,
             "torch_rng": torch.get_rng_state(),
@@ -159,7 +163,7 @@ class RLAgent(ABC):
             raise KeyError(f"Checkpoint missing 'network' key: {path}")
         self.network.load_state_dict(checkpoint["network"])
 
-        if load_optimizer and "optimizer" in checkpoint:
+        if load_optimizer and "optimizer" in checkpoint and self.optimizer is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
 
         if "global_step" in checkpoint:
@@ -199,6 +203,14 @@ class RLAgent(ABC):
             self.network.eval()
         else:
             self.network.train()
+        if self.observation_normalizer is not None and hasattr(
+            self.observation_normalizer, "training"
+        ):
+            self.observation_normalizer.training = not eval_mode
+        if self.reward_normalizer is not None and hasattr(
+            self.reward_normalizer, "training"
+        ):
+            self.reward_normalizer.training = not eval_mode
 
     def _initialize_obs(self):
         obs_list = [env.reset() for env in self.envs]
@@ -235,9 +247,13 @@ class RLAgent(ABC):
             obs = self.observation_normalizer.normalize(obs)
         return obs
 
-    def normalize_reward(self, reward: np.ndarray) -> np.ndarray:
+    def normalize_reward(
+        self,
+        reward: np.ndarray,
+        dones: np.ndarray | None = None,
+    ) -> np.ndarray:
         if self.reward_normalizer:
-            reward = self.reward_normalizer.normalize(reward)
+            reward = self.reward_normalizer.normalize(reward, dones)
         return reward
 
     def _step_env(self, env, action):

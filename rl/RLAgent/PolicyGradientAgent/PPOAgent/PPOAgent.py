@@ -13,8 +13,8 @@ class PPOAgent(PolicyGradientAgent):
     def __init__(
         self,
         network: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
         envs: list[Environment] | Environment,
+        optimizer: torch.optim.Optimizer | None = None,
         reward_normalizer: RewardNormalizer | None = None,
         observation_normalizer: ObservationNormalizer | None = None,
         device: torch.device | None = None,
