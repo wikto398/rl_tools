@@ -78,9 +78,12 @@ class TimingCallback(Callback):
         if self.agent is None:
             return
         prefix = self.log_prefix
-        self.agent.log(f"{prefix}/{name}_s", seconds)
+        self.agent.blackboard.record(
+            f"{prefix}/{name}_s", seconds, self.agent.global_step
+        )
         if self._env_steps > 0:
-            self.agent.log(
+            self.agent.blackboard.record(
                 f"{prefix}/{name}_ms_per_env_step",
                 1000.0 * seconds / self._env_steps,
+                self.agent.global_step,
             )

@@ -100,14 +100,20 @@ class EvalCallback(Callback):
         wins_arr = np.asarray(wins[: self.n_episodes], dtype=bool)
         infos = infos[: self.n_episodes]
         prefix = self.log_prefix
-        agent.log(f"{prefix}/mean_return", float(returns_arr.mean()))
+        blackboard = agent.blackboard
+        step = agent.global_step
+
+        def _log(key: str, value: float) -> None:
+            blackboard.record(f"{prefix}/{key}", float(value), step)
+
+        _log("mean_return", returns_arr.mean())
         if returns_arr.size > 1:
-            agent.log(f"{prefix}/std_return", float(returns_arr.std()))
-        agent.log(f"{prefix}/mean_length", float(lengths_arr.mean()))
-        agent.log(f"{prefix}/n_episodes", float(returns_arr.size))
+            _log("std_return", returns_arr.std())
+        _log("mean_length", lengths_arr.mean())
+        _log("n_episodes", returns_arr.size)
         n_wins = int(wins_arr.sum())
-        agent.log(f"{prefix}/n_wins", float(n_wins))
-        agent.log(f"{prefix}/win_rate", n_wins / wins_arr.size)
+        _log("n_wins", n_wins)
+        _log("win_rate", n_wins / wins_arr.size)
 
         # Summary-based stats only for episodes that ended via the game terminal
         # (truncated episodes carry no reward_breakdown).
@@ -127,16 +133,16 @@ class EvalCallback(Callback):
             if info.get("lost") and info.get("turns") is not None
         ]
         if win_turns:
-            agent.log(f"{prefix}/mean_win_turns", float(np.mean(win_turns)))
+            _log("mean_win_turns", np.mean(win_turns))
         if loss_turns:
-            agent.log(f"{prefix}/mean_loss_turns", float(np.mean(loss_turns)))
+            _log("mean_loss_turns", np.mean(loss_turns))
 
         breakdown_totals: dict[str, float] = {}
         for info in valid:
             for key, value in info.get("reward_breakdown", {}).items():
                 breakdown_totals[key] = breakdown_totals.get(key, 0.0) + float(value)
         for key, value in sorted(breakdown_totals.items()):
-            agent.log(f"{prefix}/breakdown/{key}", value / n_valid)
+            _log(f"breakdown/{key}", value / n_valid)
 
         for field in ("buildings_started", "buildings_completed"):
             totals: dict[str, float] = {}
@@ -144,7 +150,7 @@ class EvalCallback(Callback):
                 for key, value in info.get(field, {}).items():
                     totals[key] = totals.get(key, 0.0) + float(value)
             for key, value in sorted(totals.items()):
-                agent.log(f"{prefix}/{field}/{key}", value / n_valid)
+                _log(f"{field}/{key}", value / n_valid)
 
         population = [float(info.get("population", 0.0)) for info in valid]
         working_population = [
@@ -152,13 +158,25 @@ class EvalCallback(Callback):
         ]
         total_resources = [float(info.get("total_resources", 0.0)) for info in valid]
         production = [float(sum(info.get("production", []) or [])) for info in valid]
-        agent.log(f"{prefix}/mean_end_population", float(np.mean(population)))
-        agent.log(
-            f"{prefix}/mean_end_working_population",
-            float(np.mean(working_population)),
+        _log("mean_end_population", np.mean(population))
+        _log("mean_end_working_population", np.mean(working_population))
+        _log("mean_end_total_resources", np.mean(total_resources))
+        _log("mean_end_production", np.mean(production))
+
+        blackboard.set(
+            "eval/latest",
+            {
+                "win_rate": n_wins / wins_arr.size,
+                "n_wins": n_wins,
+                "n_episodes": int(returns_arr.size),
+                "mean_return": float(returns_arr.mean()),
+                "mean_length": float(lengths_arr.mean()),
+                "mean_end_population": float(np.mean(population)),
+                "mean_end_working_population": float(np.mean(working_population)),
+                "mean_end_total_resources": float(np.mean(total_resources)),
+                "mean_end_production": float(np.mean(production)),
+            },
         )
-        agent.log(f"{prefix}/mean_end_total_resources", float(np.mean(total_resources)))
-        agent.log(f"{prefix}/mean_end_production", float(np.mean(production)))
 
     def _collect_episodes(
         self,

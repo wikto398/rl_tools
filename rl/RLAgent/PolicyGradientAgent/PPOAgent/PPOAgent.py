@@ -140,9 +140,19 @@ class PPOAgent(PolicyGradientAgent):
             "clip_fraction": float(np.mean(clip_fractions)),
             "entropy_coef": float(current_entropy_coef),
         }
-        self.log("loss/policy", update_info["policy_loss"])
-        self.log("loss/value", update_info["value_loss"])
-        self.log("loss/entropy", update_info["entropy_loss"])
-        self.log("train/clip_fraction", update_info["clip_fraction"])
-        self.log("train/entropy_coef", update_info["entropy_coef"])
+        self.blackboard.record(
+            "loss/policy", update_info["policy_loss"], self.global_step
+        )
+        self.blackboard.record(
+            "loss/value", update_info["value_loss"], self.global_step
+        )
+        self.blackboard.record(
+            "loss/entropy", update_info["entropy_loss"], self.global_step
+        )
+        self.blackboard.record(
+            "train/clip_fraction", update_info["clip_fraction"], self.global_step
+        )
+        self.blackboard.record(
+            "train/entropy_coef", update_info["entropy_coef"], self.global_step
+        )
         self.callback.on_update_end(update_info)

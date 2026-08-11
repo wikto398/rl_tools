@@ -71,7 +71,11 @@ class PolicyGradientAgent(RLAgent):
                 if self.reward_normalizer is not None and hasattr(
                     self.reward_normalizer, "scale"
                 ):
-                    self.log("reward/norm_scale", self.reward_normalizer.scale)
+                    self.blackboard.record(
+                        "reward/norm_scale",
+                        self.reward_normalizer.scale,
+                        self.global_step,
+                    )
                 rollout_buffer = self.compute_gae(rollout_buffer=rollout_buffer)
                 self.logger.debug("Computed GAE advantages and returns for rollout")
                 self.callback.on_update_start(rollout_buffer)
