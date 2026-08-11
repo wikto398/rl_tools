@@ -124,4 +124,40 @@ class RLArgsParser:
             action="store_true",
             help="Only print ERROR logs to console and files; info/metrics go to TensorBoard only",
         )
+        parser.add_argument(
+            "--no_tensorboard",
+            action="store_true",
+            help="Disable the TensorBoard SummaryWriter (and --tensorboard_port server)",
+        )
+        parser.add_argument(
+            "--wandb_project",
+            type=str,
+            default=None,
+            help="W&B project name; passing this enables W&B logging",
+        )
+        parser.add_argument(
+            "--wandb_entity",
+            type=str,
+            default=None,
+            help="W&B entity/team to scope the run to",
+        )
+        parser.add_argument(
+            "--wandb_name",
+            type=str,
+            default=None,
+            help="W&B run name (default: the logs/<timestamp> directory basename)",
+        )
+        parser.add_argument(
+            "--wandb_tags",
+            type=str,
+            default=None,
+            help="Comma-separated W&B run tags",
+        )
+        parser.add_argument(
+            "--wandb_mode",
+            type=str,
+            choices=["offline", "online", "disabled"],
+            default="offline",
+            help="W&B run mode (offline writes locally to logs/<ts>/wandb, sync later with `wandb sync`)",
+        )
         return parser.parse_args()
