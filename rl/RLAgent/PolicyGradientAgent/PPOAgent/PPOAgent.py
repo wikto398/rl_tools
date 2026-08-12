@@ -32,6 +32,9 @@ class PPOAgent(PolicyGradientAgent):
         entropy_coef_decay_steps: int = 1_000_000,
         entropy_coef_start: float = 0.7,
         entropy_coef_end: float = 0.01,
+        adaptive_entropy: bool = True,
+        entropy_target: float | None = None,
+        entropy_adapt_lr: float = 0.1,
         **kwargs,
     ):
         super().__init__(
@@ -57,6 +60,12 @@ class PPOAgent(PolicyGradientAgent):
         self.entropy_coef_start = entropy_coef_start
         self.entropy_coef_end = entropy_coef_end
         self.entropy_coef_decay_steps = entropy_coef_decay_steps
+        self.adaptive_entropy = adaptive_entropy
+        self.entropy_target = (
+            entropy_target if entropy_target is not None else entropy_coef_start
+        )
+        self.entropy_adapt_lr = entropy_adapt_lr
+        self._entropy_coef = entropy_coef_start
 
     def clip_gradients(self, max_norm: float):
         torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm)
@@ -74,10 +83,13 @@ class PPOAgent(PolicyGradientAgent):
         entropy_losses = []
         clip_fractions = []
 
-        frac = min(self.global_step / self.entropy_coef_decay_steps, 1.0)
-        current_entropy_coef = self.entropy_coef_start + frac * (
-            self.entropy_coef_end - self.entropy_coef_start
-        )
+        if self.adaptive_entropy:
+            current_entropy_coef = self._entropy_coef
+        else:
+            frac = min(self.global_step / self.entropy_coef_decay_steps, 1.0)
+            current_entropy_coef = self.entropy_coef_start + frac * (
+                self.entropy_coef_end - self.entropy_coef_start
+            )
 
         for epoch in range(self.epochs):
             indices = torch.randperm(full_batch.shape[0])
@@ -133,10 +145,23 @@ class PPOAgent(PolicyGradientAgent):
                 entropy_losses.append(entropy_loss.item())
                 clip_fractions.append(clip_fraction.item())
 
+        entropy_mean = -float(np.mean(entropy_losses))
+
+        if self.adaptive_entropy:
+            self._entropy_coef = float(
+                np.clip(
+                    self._entropy_coef
+                    + self.entropy_adapt_lr * (entropy_mean - self.entropy_target),
+                    self.entropy_coef_end,
+                    self.entropy_coef_start,
+                )
+            )
+
         update_info = {
             "policy_loss": float(np.mean(policy_losses)),
             "value_loss": float(np.mean(value_losses)),
             "entropy_loss": float(np.mean(entropy_losses)),
+            "entropy": entropy_mean,
             "clip_fraction": float(np.mean(clip_fractions)),
             "entropy_coef": float(current_entropy_coef),
         }
@@ -148,6 +173,9 @@ class PPOAgent(PolicyGradientAgent):
         )
         self.blackboard.record(
             "loss/entropy", update_info["entropy_loss"], self.global_step
+        )
+        self.blackboard.record(
+            "train/entropy", update_info["entropy"], self.global_step
         )
         self.blackboard.record(
             "train/clip_fraction", update_info["clip_fraction"], self.global_step

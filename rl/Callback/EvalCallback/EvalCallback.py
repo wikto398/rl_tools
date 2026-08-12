@@ -23,6 +23,7 @@ class EvalCallback(Callback):
         n_episodes: int,
         max_episode_steps: int = 10_000,
         log_prefix: str = "eval",
+        deterministic: bool = True,
     ) -> None:
         super().__init__()
         if not envs:
@@ -40,6 +41,7 @@ class EvalCallback(Callback):
         self.n_episodes = n_episodes
         self.max_episode_steps = max_episode_steps
         self.log_prefix = log_prefix
+        self.deterministic = deterministic
         self._last_eval_step = 0
         self._eval_run_index = 0
         self._pool = ThreadPoolExecutor(max_workers=len(self.envs))
@@ -85,7 +87,7 @@ class EvalCallback(Callback):
             f"EvalCallback: evaluating for {self.n_episodes} episodes "
             f"on {len(self.envs)} env(s) at global_step={agent.global_step}"
         )
-        agent.set_eval_mode(True)
+        agent.set_eval_mode(True, deterministic=self.deterministic)
         try:
             returns, lengths, wins, infos = self._collect_episodes()
         finally:

@@ -67,6 +67,18 @@ class RLArgsParser:
             help="Number of full episodes to average per evaluation",
         )
         parser.add_argument(
+            "--deterministic_eval",
+            action="store_true",
+            default=True,
+            help="Evaluate using argmax (greedy) actions (default)",
+        )
+        parser.add_argument(
+            "--stochastic_eval",
+            action="store_false",
+            dest="deterministic_eval",
+            help="Evaluate using sampled actions (override --deterministic_eval)",
+        )
+        parser.add_argument(
             "--iterations",
             type=int,
             default=1000,

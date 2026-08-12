@@ -170,11 +170,15 @@ class RLAgent(ABC):
             f"(global_step={self.global_step}, update_steps={self.update_steps})"
         )
 
-    def set_eval_mode(self, eval_mode: bool):
+    def set_eval_mode(self, eval_mode: bool, deterministic: bool | None = None):
         if eval_mode:
             self.network.eval()
+            if deterministic is not None:
+                self.network.deterministic = deterministic
         else:
             self.network.train()
+            if hasattr(self.network, "deterministic"):
+                self.network.deterministic = False
         if self.observation_normalizer is not None and hasattr(
             self.observation_normalizer, "training"
         ):
