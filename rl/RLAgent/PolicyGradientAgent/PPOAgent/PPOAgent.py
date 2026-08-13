@@ -30,10 +30,10 @@ class PPOAgent(PolicyGradientAgent):
         observation_keys: list[str] | None = None,
         action_mask_keys: list[str] | None = None,
         entropy_coef_decay_steps: int = 1_000_000,
-        entropy_coef_start: float = 0.7,
+        entropy_coef_start: float = 0.2,
         entropy_coef_end: float = 0.01,
         adaptive_entropy: bool = True,
-        entropy_target: float | None = None,
+        entropy_target: float | None = 0.5,
         entropy_adapt_lr: float = 0.1,
         **kwargs,
     ):

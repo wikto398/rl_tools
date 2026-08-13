@@ -85,6 +85,13 @@ class RLArgsParser:
             help="Number of training iterations to run (additional iterations when resuming)",
         )
         parser.add_argument(
+            "--max_steps",
+            type=int,
+            default=None,
+            help="Stop each run after ~N global steps (overrides --iterations). "
+            "Derived as ceil(max_steps / (rollout_size * instances)).",
+        )
+        parser.add_argument(
             "--checkpoint",
             type=str,
             default=None,
@@ -171,5 +178,23 @@ class RLArgsParser:
             choices=["offline", "online", "disabled"],
             default="offline",
             help="W&B run mode (offline writes locally to logs/<ts>/wandb, sync later with `wandb sync`)",
+        )
+        parser.add_argument(
+            "--sweep_config",
+            type=str,
+            default=None,
+            help="Path to a YAML W&B sweep search space; presence enables sweep mode",
+        )
+        parser.add_argument(
+            "--sweep_count",
+            type=int,
+            default=None,
+            help="Maximum number of sweep trials to run (default: until stopped)",
+        )
+        parser.add_argument(
+            "--sweep_entity",
+            type=str,
+            default=None,
+            help="W&B entity to scope the sweep to (default: --wandb_entity)",
         )
         return parser.parse_args()

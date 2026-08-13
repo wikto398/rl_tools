@@ -23,6 +23,7 @@ class WandbCallback(SinkCallback):
         if wandb_run is None:
             raise ValueError("wandb_run is required for WandbCallback")
         self.wandb_run = wandb_run
+        self._last_eval_step: int | None = None
 
     def _write_scalar(self, step: int, key: str, value: float) -> None:
         self.wandb_run.log({key: value}, step=step)
@@ -34,9 +35,11 @@ class WandbCallback(SinkCallback):
         super()._flush()
         if self.agent is None:
             return
+        step = self.agent.blackboard.get("eval/latest_step")
         latest = self.agent.blackboard.get("eval/latest")
-        if latest:
+        if latest and step is not None and step != self._last_eval_step:
+            self._last_eval_step = step
             columns = list(latest.keys())
             row = [latest[c] for c in columns]
             table = wandb_lib.Table(columns=columns, data=[row])
-            self.wandb_run.log({"eval/latest": table})
+            self.wandb_run.log({"eval/latest": table}, step=step)

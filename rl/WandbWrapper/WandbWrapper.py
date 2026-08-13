@@ -25,9 +25,21 @@ class WandbWrapper:
     def init(self) -> wandb.Run:
         return wandb.init(project=self.project, config=self.config, **self.kwargs)
 
-    def sweep(self, sweep_config: dict, train_fn: Callable) -> str:
-        sweep_id = wandb.sweep(sweep_config, project=self.project)
-        wandb.agent(sweep_id, function=train_fn)
+    def sweep(
+        self,
+        sweep_config: dict,
+        train_fn: Callable,
+        *,
+        count: int | None = None,
+        entity: str | None = None,
+    ) -> str:
+        sweep_id = wandb.sweep(sweep_config, project=self.project, entity=entity)
+        wandb.agent(
+            sweep_id,
+            function=train_fn,
+            count=count,
+            entity=entity,
+        )
         return sweep_id
 
     def log(self, metrics: dict, step: int | None = None):

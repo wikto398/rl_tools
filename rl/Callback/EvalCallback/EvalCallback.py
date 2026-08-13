@@ -165,6 +165,7 @@ class EvalCallback(Callback):
         _log("mean_end_total_resources", np.mean(total_resources))
         _log("mean_end_production", np.mean(production))
 
+        blackboard.set("eval/latest_step", step)
         blackboard.set(
             "eval/latest",
             {

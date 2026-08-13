@@ -12,10 +12,10 @@ from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
 
 
 class RLInitializer:
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, log_path: str | None = None):
         self.args = args
         self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.log_path = f"logs/{self.timestamp}"
+        self.log_path = log_path or f"logs/{self.timestamp}"
         os.makedirs(self.log_path, exist_ok=True)
         self.quiet = bool(getattr(args, "quiet", False))
         console_level = (
