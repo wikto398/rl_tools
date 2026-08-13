@@ -13,7 +13,11 @@ from rl_tools.rl.Callback import CallbackList
 from rl_tools.rl.Callback.ConsoleCallback import ConsoleCallback
 from rl_tools.rl.Callback.EvalCallback import EvalCallback
 from rl_tools.rl.Callback.NetworkSaveCallback import NetworkSaveCallback
+from rl_tools.rl.Callback.StopTrainingCallback.GateStopCallback import GateStopCallback
 from rl_tools.rl.Callback.StopTrainingCallback.KeyStopCallback import KeyStopCallback
+from rl_tools.rl.Callback.StopTrainingCallback.MetricStopCallback import (
+    MetricStopCallback,
+)
 from rl_tools.rl.Callback.TensorboardCallback import TensorboardCallback
 from rl_tools.rl.Callback.TimingCallback import TimingCallback
 from rl_tools.rl.Callback.WandbCallback import WandbCallback
@@ -23,6 +27,69 @@ from rl_tools.rl.RLInitializer import RLInitializer
 from rl_tools.rl.WandbWrapper import WandbWrapper
 
 import wandb as wandb_lib
+
+
+def _parse_gate_spec(args) -> list[dict]:
+    """Collect gate specs from --gate_step and repeatable --gate flags.
+
+    Returns a list of ``GateStopCallback``-compatible kwargs. The legacy
+    ``--gate_step/--gate_metric/--gate_threshold/--gate_goal`` flags form one
+    spec; each ``--gate "step,metric,threshold[,goal]"`` forms another.
+    """
+    specs: list[dict] = []
+    if args.gate_step:
+        specs.append(
+            {
+                "check_step": int(args.gate_step),
+                "metric": args.gate_metric,
+                "threshold": float(args.gate_threshold),
+                "goal": args.gate_goal,
+            }
+        )
+    for raw in args.gate or []:
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) not in (3, 4):
+            raise ValueError(
+                f"--gate expects 'step,metric,threshold[,goal]', got {raw!r}"
+            )
+        spec = {
+            "check_step": int(parts[0]),
+            "metric": parts[1],
+            "threshold": float(parts[2]),
+        }
+        if len(parts) == 4:
+            goal = parts[3]
+            if goal not in ("below", "above"):
+                raise ValueError(
+                    f"--gate goal must be 'below' or 'above', got {goal!r}"
+                )
+            spec["goal"] = goal
+        specs.append(spec)
+    return specs
+
+
+def _load_gates_config(path: str | None) -> list[dict]:
+    """Load gate specs from a YAML file with a ``gates:`` list."""
+    if not path:
+        return []
+    from pathlib import Path
+
+    data = yaml.safe_load(Path(path).read_text())
+    gates = data.get("gates", []) if isinstance(data, dict) else []
+    specs: list[dict] = []
+    for entry in gates:
+        spec = {
+            "check_step": int(entry["step"]),
+            "metric": entry.get("metric", "win_rate"),
+            "threshold": float(entry.get("threshold", 0.05)),
+            "goal": entry.get("goal", "below"),
+        }
+        if spec["goal"] not in ("below", "above"):
+            raise ValueError(
+                f"gate goal must be 'below' or 'above', got {spec['goal']!r}"
+            )
+        specs.append(spec)
+    return specs
 
 
 class Trainer:
@@ -154,6 +221,29 @@ class Trainer:
                         deterministic=args.deterministic_eval,
                     )
                 )
+            # Metric-based stopping reads eval/latest from the blackboard, so it
+            # must come after EvalCallback within the same update cycle.
+            if args.stop_metric:
+                callbacks.append(
+                    MetricStopCallback(
+                        metric=args.stop_metric,
+                        threshold=args.stop_threshold,
+                        patience=args.stop_patience,
+                    )
+                )
+            if args.gate_step:
+                callbacks.append(
+                    GateStopCallback(
+                        check_step=args.gate_step,
+                        metric=args.gate_metric,
+                        threshold=args.gate_threshold,
+                        goal=args.gate_goal,
+                    )
+                )
+            for spec in _parse_gate_spec(args):
+                callbacks.append(GateStopCallback(**spec))
+            for spec in _load_gates_config(args.gates_config):
+                callbacks.append(GateStopCallback(**spec))
             callbacks.extend(
                 [
                     KeyStopCallback(key="q"),

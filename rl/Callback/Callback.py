@@ -21,6 +21,21 @@ class Callback(ABC):
         """One-time init when the agent attaches this callback. Optional override."""
         self.agent = agent
 
+    def detach(self) -> None:
+        """Remove this callback from the agent's callback container.
+
+        Only effective when the agent holds a ``CallbackList``; a no-op
+        otherwise. Safe to call from inside any hook (the container iterates
+        over snapshots).
+        """
+        if self.agent is None:
+            return
+        from rl_tools.rl.Callback.CallbackList import CallbackList
+
+        container = self.agent.callback
+        if isinstance(container, CallbackList):
+            container.remove(self)
+
     @abstractmethod
     def on_train_start(self) -> None: ...
 

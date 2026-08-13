@@ -197,4 +197,60 @@ class RLArgsParser:
             default=None,
             help="W&B entity to scope the sweep to (default: --wandb_entity)",
         )
+        parser.add_argument(
+            "--stop_metric",
+            type=str,
+            default=None,
+            help="Stop training when this eval metric stays bad for --stop_patience consecutive evals (e.g. win_rate)",
+        )
+        parser.add_argument(
+            "--stop_threshold",
+            type=float,
+            default=0.05,
+            help="Threshold for --stop_metric pruning",
+        )
+        parser.add_argument(
+            "--stop_patience",
+            type=int,
+            default=3,
+            help="Consecutive bad evals before stopping (--stop_metric)",
+        )
+        parser.add_argument(
+            "--gate_step",
+            type=int,
+            default=None,
+            help="One-shot go/no-go step: stop the run if the metric is bad at this step",
+        )
+        parser.add_argument(
+            "--gate_metric",
+            type=str,
+            default="win_rate",
+            help="Metric evaluated at --gate_step",
+        )
+        parser.add_argument(
+            "--gate_threshold",
+            type=float,
+            default=0.05,
+            help="Threshold for --gate_step check",
+        )
+        parser.add_argument(
+            "--gate_goal",
+            type=str,
+            choices=["below", "above"],
+            default="below",
+            help="Stop when metric is below/above the gate threshold",
+        )
+        parser.add_argument(
+            "--gate",
+            action="append",
+            default=None,
+            help="One-shot gate as 'step,metric,threshold[,goal]'. Repeatable for "
+            "multiple gates (goal defaults to 'below').",
+        )
+        parser.add_argument(
+            "--gates_config",
+            type=str,
+            default=None,
+            help="Path to a YAML file listing multiple gates under a 'gates:' key",
+        )
         return parser.parse_args()

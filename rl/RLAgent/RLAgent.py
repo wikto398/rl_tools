@@ -116,6 +116,9 @@ class RLAgent(ABC):
                 if self.reward_normalizer is not None
                 else None
             ),
+            "entropy_coef": (
+                self._entropy_coef if hasattr(self, "_entropy_coef") else None
+            ),
         }
         path_obj = Path(path)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +167,12 @@ class RLAgent(ABC):
         reward_state = checkpoint.get("reward_normalizer")
         if reward_state is not None and self.reward_normalizer is not None:
             self.reward_normalizer.load_state_dict(reward_state)
+
+        if (
+            hasattr(self, "_entropy_coef")
+            and checkpoint.get("entropy_coef") is not None
+        ):
+            self._entropy_coef = float(checkpoint["entropy_coef"])
 
         self.info(
             f"Loaded checkpoint from {path} "

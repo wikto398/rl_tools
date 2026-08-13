@@ -18,23 +18,28 @@ class CallbackList(Callback):
 
     def setup(self, agent: RLAgent) -> None:
         super().setup(agent)
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.setup(agent)
 
+    def remove(self, callback: Callback) -> None:
+        """Remove a callback from the list if present. Safe mid-iteration."""
+        if callback in self.callbacks:
+            self.callbacks.remove(callback)
+
     def on_train_start(self) -> None:
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.on_train_start()
 
     def on_train_end(self) -> None:
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.on_train_end()
 
     def on_rollout_start(self) -> None:
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.on_rollout_start()
 
     def on_rollout_end(self, rollout: TensorDict) -> None:
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.on_rollout_end(rollout)
 
     def on_step(
@@ -46,7 +51,7 @@ class CallbackList(Callback):
         infos: Sequence[dict],
     ) -> bool:
         continue_training = True
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             continue_training = (
                 callback.on_step(
                     actions=actions,
@@ -59,9 +64,9 @@ class CallbackList(Callback):
         return continue_training
 
     def on_update_start(self, rollout: TensorDict) -> None:
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.on_update_start(rollout)
 
     def on_update_end(self, update_info: dict) -> None:
-        for callback in self.callbacks:
+        for callback in list(self.callbacks):
             callback.on_update_end(update_info)
