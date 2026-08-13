@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 
@@ -76,6 +78,8 @@ def _load_gates_config(path: str | None) -> list[dict]:
 
     data = yaml.safe_load(Path(path).read_text())
     gates = data.get("gates", []) if isinstance(data, dict) else []
+    print(f"[config] loaded gates config {path}")
+    print(f"[config]   gates: {gates}")
     specs: list[dict] = []
     for entry in gates:
         spec = {
@@ -92,6 +96,17 @@ def _load_gates_config(path: str | None) -> list[dict]:
     return specs
 
 
+def _seed_rng(seed: int | None) -> None:
+    """Seed Python / NumPy / PyTorch RNGs for reproducibility."""
+    if seed is None:
+        return
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 class Trainer:
     """Generic training / sweep orchestrator.
 
@@ -106,7 +121,10 @@ class Trainer:
     @staticmethod
     def load_sweep_config(path: str) -> dict:
         """Load a W&B sweep config from a YAML file."""
-        return yaml.safe_load(Path(path).read_text())
+        data = yaml.safe_load(Path(path).read_text())
+        print(f"[config] loaded sweep config {path}")
+        print(f"[config]   {data}")
+        return data
 
     def __init__(
         self,
@@ -116,6 +134,7 @@ class Trainer:
         callbacks_factory: CallbacksFactory,
         normalizers_factory: NormalizersFactory,
     ) -> None:
+        _seed_rng(getattr(args, "seed", None))
         self.args = args
         self.network_factory = network_factory
         self.callbacks_factory = callbacks_factory
@@ -130,7 +149,8 @@ class Trainer:
     ) -> None:
         args = self.args
         initializer = initializer or self.initializer
-        params = dict(overrides or {})
+        base = getattr(args, "hyperparams", None) or {}
+        params = {**base, **(overrides or {})}
         lr = params.pop("lr", self.DEFAULT_LR)
         tensorboard_proc = None
 
@@ -242,7 +262,14 @@ class Trainer:
                 )
             for spec in _parse_gate_spec(args):
                 callbacks.append(GateStopCallback(**spec))
-            for spec in _load_gates_config(args.gates_config):
+            gates_specs = _load_gates_config(args.gates_config)
+            if gates_specs:
+                initializer.main_logger.info(
+                    "[config] loaded gates config %s: %s",
+                    args.gates_config,
+                    gates_specs,
+                )
+            for spec in gates_specs:
                 callbacks.append(GateStopCallback(**spec))
             callbacks.extend(
                 [
@@ -307,12 +334,18 @@ class Trainer:
                 f"Sweeps require the W&B backend; --wandb_mode={self.args.wandb_mode} "
                 "is not supported (use --wandb_mode online or a self-hosted server)"
             )
+        self.initializer.main_logger.info(
+            "[config] loaded sweep config %s: %s",
+            self.args.sweep_config,
+            sweep_config,
+        )
         wrapper = WandbWrapper(project=self.args.wandb_project)
 
         trial_index = 0
 
         def _run() -> None:
             nonlocal trial_index
+            _seed_rng(self.args.seed)
             trial_dir = os.path.join(
                 self.initializer.log_path, "trials", f"trial_{trial_index}"
             )

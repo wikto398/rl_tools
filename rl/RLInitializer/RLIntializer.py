@@ -10,6 +10,10 @@ from rl_tools.game_engine.ActionInterface.UDPAction import UDPAction
 from rl_tools.game_engine.GameEnvConnector import GameEnvConnector
 from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
 
+# Args forwarded to the game engine process. Everything else in the CLI
+# namespace is Trainer-only and stays out of the engine's command line.
+GODOT_ARG_ALLOWLIST = {"log_level", "log_to_file", "seed", "render"}
+
 
 class RLInitializer:
     def __init__(self, args: argparse.Namespace, log_path: str | None = None):
@@ -44,6 +48,18 @@ class RLInitializer:
         )
         self.main_logger.addHandler(self._file_handler)
         self.main_logger.info("RL Tools started with configuration: %s", vars(args))
+        report = getattr(args, "config_report", None)
+        if report:
+            self.main_logger.info("[config] loaded %s", report["path"])
+            self.main_logger.info("[config]   cli:         %s", report["cli"])
+            self.main_logger.info("[config]   hyperparams: %s", report["hyperparams"])
+            self.main_logger.info(
+                "[config]   effective cli:         %s", report["effective_cli"]
+            )
+            self.main_logger.info(
+                "[config]   effective hyperparams: %s",
+                report["effective_hyperparams"],
+            )
         self.main_logger.info("Starting RL Tools with %d instances", args.instances)
         if args.kill_existing:
             self.main_logger.info("Killing existing game engine instances...")
@@ -172,9 +188,11 @@ def start_instance(
     }
     if args:
         for key, value in vars(args).items():
-            if value is None:
-                continue
-            game_engine_kwargs[key] = value
+            if key in GODOT_ARG_ALLOWLIST and value is not None:
+                game_engine_kwargs[key] = value
+        for raw in getattr(args, "engine_args", None) or []:
+            key, _, value = raw.partition("=")
+            game_engine_kwargs[key.strip().lstrip("-")] = value.strip()
     if render is not None:
         game_engine_kwargs["render"] = render
     elif args is not None and hasattr(args, "render"):

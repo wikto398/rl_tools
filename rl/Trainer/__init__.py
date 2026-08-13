@@ -1,3 +1,3 @@
-from .Trainer import Trainer
+from .Trainer import Trainer, _seed_rng
 
-__all__ = ["Trainer"]
+__all__ = ["Trainer", "_seed_rng"]

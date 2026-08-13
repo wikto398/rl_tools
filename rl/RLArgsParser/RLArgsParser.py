@@ -1,4 +1,8 @@
 import argparse
+from pathlib import Path
+
+import yaml
+
 from rl_tools.game_engine.HeadlessGameEngine import HeadlessGameEngine
 from rl_tools.utils.config import CONFIG
 
@@ -253,4 +257,93 @@ class RLArgsParser:
             default=None,
             help="Path to a YAML file listing multiple gates under a 'gates:' key",
         )
-        return parser.parse_args()
+        parser.add_argument(
+            "--engine_args",
+            action="append",
+            default=None,
+            help="Extra key=value args forwarded verbatim to the game engine process. "
+            "Repeatable (e.g. --engine_args my_flag=1 --engine_args other=2).",
+        )
+        parser.add_argument(
+            "--config",
+            type=str,
+            default=None,
+            help="Path to a YAML config file with 'hyperparams' and 'cli' sections "
+            "(non-sweep runs only; explicit CLI flags override the file).",
+        )
+        args = parser.parse_args()
+        if args.config:
+            _apply_config(args, parser, args.config)
+        return args
+
+
+# Hyperparameter knobs forwarded to PPOAgent (mirrors the sweepable set + extras).
+CONFIG_HYPERPARAM_KEYS = {
+    "lr",
+    "gamma",
+    "lam",
+    "epochs",
+    "batch_size",
+    "rollout_size",
+    "entropy_coef_start",
+    "entropy_coef_end",
+    "entropy_coef_decay_steps",
+    "entropy_target",
+    "entropy_adapt_lr",
+    "adaptive_entropy",
+    "clip_epsilon",
+    "value_loss_coef",
+}
+
+
+def _apply_config(args, parser, config_path: str) -> None:
+    """Merge a YAML config into parsed args.
+
+    ``cli`` keys are applied only to existing argparse dests and only when the
+    CLI did not explicitly set them (CLI wins). ``hyperparams`` keys are stored
+    on ``args.hyperparams`` for the Trainer. Unknown keys are ignored.
+    """
+    try:
+        data = yaml.safe_load(Path(config_path).read_text())
+    except (OSError, yaml.YAMLError) as e:
+        raise ValueError(f"Failed to load config {config_path!r}: {e}") from e
+
+    defaults = parser.parse_args([])
+
+    cli = data.get("cli")
+    effective_cli: dict = {}
+    if isinstance(cli, dict):
+        for key, value in cli.items():
+            if key not in vars(args):
+                print(f"[config] ignoring unknown cli key: {key}")
+                continue
+            if key == "config":
+                continue
+            # Only apply if the CLI left the value at its default.
+            if getattr(args, key) == getattr(defaults, key):
+                setattr(args, key, value)
+                effective_cli[key] = value
+
+    hyperparams = data.get("hyperparams")
+    if isinstance(hyperparams, dict):
+        unknown = set(hyperparams) - CONFIG_HYPERPARAM_KEYS
+        for key in unknown:
+            print(f"[config] ignoring unknown hyperparam key: {key}")
+        args.hyperparams = {
+            k: v for k, v in hyperparams.items() if k in CONFIG_HYPERPARAM_KEYS
+        }
+    else:
+        args.hyperparams = {}
+
+    print(f"[config] loaded {config_path}")
+    print(f"[config]   cli:         {cli}")
+    print(f"[config]   hyperparams: {hyperparams}")
+    print(f"[config]   effective cli:         {effective_cli}")
+    print(f"[config]   effective hyperparams: {args.hyperparams}")
+    args.config_report = {
+        "path": config_path,
+        "cli": cli,
+        "hyperparams": hyperparams,
+        "effective_cli": effective_cli,
+        "effective_hyperparams": args.hyperparams,
+    }
