@@ -55,6 +55,21 @@ class GameEnvConnector:
         return wrapper
 
     def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Terminate the game engine process and close all interfaces.
+
+        Idempotent: safe to call multiple times. Must be called so UDP
+        sockets are released and the port can be reused by a later instance
+        (e.g. the next sweep trial in the same process).
+        """
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         if self.game_engine and self.game_engine.process:
             self.logger.info("Terminating game engine process...")
             self.game_engine.process.terminate()
@@ -66,6 +81,8 @@ class GameEnvConnector:
                     "Game engine process did not terminate in time. Killing it."
                 )
                 self.game_engine.process.kill()
+        self.action_interface.close()
+        self.observation_interface.close()
 
     def connect(self):
         self._test_connection()

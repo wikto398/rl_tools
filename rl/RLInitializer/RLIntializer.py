@@ -30,14 +30,19 @@ class RLInitializer:
             format="%(asctime)s - %(levelname)s - %(message)s",
         )
         self.main_logger = logging.getLogger("Main")
-        file_handler = logging.FileHandler(f"{self.log_path}/main.log")
-        file_handler.setFormatter(
+        self._file_handler = None
+        for handler in list(self.main_logger.handlers):
+            if isinstance(handler, logging.FileHandler):
+                self.main_logger.removeHandler(handler)
+                handler.close()
+        self._file_handler = logging.FileHandler(f"{self.log_path}/main.log")
+        self._file_handler.setFormatter(
             logging.Formatter(
                 fmt="[%(levelname)s] | %(asctime)s | %(name)s | %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
         )
-        self.main_logger.addHandler(file_handler)
+        self.main_logger.addHandler(self._file_handler)
         self.main_logger.info("RL Tools started with configuration: %s", vars(args))
         self.main_logger.info("Starting RL Tools with %d instances", args.instances)
         if args.kill_existing:
@@ -82,15 +87,28 @@ class RLInitializer:
         return started
 
     def stop_instances(self):
-        """Disconnect all instances cleanly."""
+        """Disconnect and close all instances cleanly.
+
+        Closes each connector (terminating its game engine process and its
+        UDP sockets) so ports can be reused by later instances — e.g. the
+        next sweep trial running in the same process.
+        """
         for i, connector in enumerate(self.connectors):
             try:
+                connector.close()
                 self.main_logger.info(
-                    f"Instance {i} disconnected with exit code {connector.game_engine.process.returncode}"
+                    f"Instance {i} closed (exit code {connector.game_engine.process.returncode})"
                 )
             except Exception as e:
-                self.main_logger.error(f"Error disconnecting instance {i}: {e}")
+                self.main_logger.error(f"Error closing instance {i}: {e}")
         self.connectors.clear()
+        if self._file_handler is not None:
+            try:
+                self.main_logger.removeHandler(self._file_handler)
+                self._file_handler.close()
+            except Exception:
+                pass
+            self._file_handler = None
 
 
 def setup_instance_logger(
@@ -101,7 +119,9 @@ def setup_instance_logger(
     logger.propagate = False
 
     if logger.handlers:
-        logger.handlers.clear()
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
 
     connector_dir = os.path.join(log_path, role, "game_connector")
     os.makedirs(connector_dir, exist_ok=True)

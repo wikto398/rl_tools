@@ -3,8 +3,10 @@ from __future__ import annotations
 import math
 import os
 import subprocess
+from pathlib import Path
 
 import torch
+import yaml
 
 from torch.utils.tensorboard.writer import SummaryWriter
 from rl_tools.rl.Callback import CallbackList
@@ -33,6 +35,11 @@ class Trainer:
 
     DEFAULT_LR = 3e-4
     DEFAULT_ROLLOUT_SIZE = 256
+
+    @staticmethod
+    def load_sweep_config(path: str) -> dict:
+        """Load a W&B sweep config from a YAML file."""
+        return yaml.safe_load(Path(path).read_text())
 
     def __init__(
         self,

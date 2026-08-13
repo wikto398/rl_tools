@@ -20,5 +20,12 @@ class UDPAction(ActionInterface):
         action_bytes = self._serialize_action(action)
         self._udp_client.send(action_bytes)
 
+    def close(self) -> None:
+        """Close the underlying UDP socket."""
+        try:
+            self._udp_client.close()
+        except OSError:
+            pass
+
     def _serialize_action(self, action):
         return bytearray(action)

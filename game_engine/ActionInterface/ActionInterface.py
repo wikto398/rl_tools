@@ -21,6 +21,10 @@ class ActionInterface(ABC):
         """Internal method to handle action sending logic."""
         pass
 
+    def close(self) -> None:
+        """Release any resources (e.g. sockets) held by this interface."""
+        pass
+
     @property
     def action(self):
         """Get the current action."""

@@ -36,3 +36,7 @@ class ObservationInterface(ABC):
     def parse_observation(self, raw_observation: bytes | None) -> dict | None:
         """Parse the raw observation data if necessary."""
         pass
+
+    def close(self) -> None:
+        """Release any resources (e.g. sockets) held by this interface."""
+        pass

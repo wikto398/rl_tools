@@ -28,6 +28,13 @@ class UDPObservation(ObservationInterface):
             return None
         return data
 
+    def close(self) -> None:
+        """Close the underlying UDP socket, releasing the bound port."""
+        try:
+            self._udp_client.close()
+        except OSError:
+            pass
+
     def parse_observation(self, raw_observation: bytes | None) -> dict | None:
         """Parse the raw observation data if necessary."""
         if raw_observation is None:
