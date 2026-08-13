@@ -176,6 +176,16 @@ class Trainer:
             ]
 
             network = self.network_factory.build()
+            if getattr(args, "torch_compile", False):
+                if torch.cuda.is_available():
+                    network = torch.compile(network)
+                    initializer.main_logger.info(
+                        "torch.compile enabled for network (op fusion active)"
+                    )
+                else:
+                    initializer.main_logger.warning(
+                        "--torch_compile requires a CUDA-capable device; skipping"
+                    )
             optimizer = torch.optim.Adam(network.parameters(), lr=lr)
             tensorboard_writer = None
             if not args.no_tensorboard:

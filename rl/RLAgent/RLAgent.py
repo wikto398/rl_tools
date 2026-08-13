@@ -206,12 +206,13 @@ class RLAgent(ABC):
         action_mask_dict = obs.get("action_mask", None)
 
         observation = {
-            k: torch.tensor(v, dtype=torch.float32) for k, v in observation_dict.items()
+            k: torch.from_numpy(np.asarray(v, dtype=np.float32))
+            for k, v in observation_dict.items()
         }
 
         if action_mask_dict is not None:
             action_mask = {
-                k: torch.tensor(v, dtype=torch.bool)
+                k: torch.from_numpy(np.asarray(v, dtype=np.bool_))
                 for k, v in action_mask_dict.items()
             }
         else:

@@ -118,6 +118,16 @@ class RLArgsParser:
             help="When loading --checkpoint, skip RNG states",
         )
         parser.add_argument(
+            "--torch_compile",
+            action="store_true",
+            help=(
+                "Wrap the network in torch.compile (requires a CUDA-capable "
+                "device). Off by default: enables op fusion for lower forward "
+                "latency but changes FP rounding (runs stay seed-reproducible "
+                "only within the same compile mode)."
+            ),
+        )
+        parser.add_argument(
             "--seed",
             type=int,
             default=None,
