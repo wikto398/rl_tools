@@ -136,7 +136,16 @@ class RLAgent(ABC):
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         if "network" not in checkpoint:
             raise KeyError(f"Checkpoint missing 'network' key: {path}")
-        self.network.load_state_dict(checkpoint["network"])
+        network_state = checkpoint["network"]
+        checkpoint_compiled = any(key.startswith("_orig_mod.") for key in network_state)
+        network_compiled = any(
+            key.startswith("_orig_mod.") for key in self.network.state_dict()
+        )
+        if checkpoint_compiled and not network_compiled:
+            network_state = {
+                key[len("_orig_mod.") :]: value for key, value in network_state.items()
+            }
+        self.network.load_state_dict(network_state)
 
         if load_optimizer and "optimizer" in checkpoint and self.optimizer is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -148,13 +157,15 @@ class RLAgent(ABC):
 
         if load_rng:
             if "torch_rng" in checkpoint and checkpoint["torch_rng"] is not None:
-                torch.set_rng_state(checkpoint["torch_rng"])
+                torch.set_rng_state(checkpoint["torch_rng"].cpu())
             if (
                 "cuda_rng" in checkpoint
                 and checkpoint["cuda_rng"] is not None
                 and torch.cuda.is_available()
             ):
-                torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
+                torch.cuda.set_rng_state_all(
+                    [state.cpu() for state in checkpoint["cuda_rng"]]
+                )
             if "numpy_rng" in checkpoint and checkpoint["numpy_rng"] is not None:
                 np.random.set_state(checkpoint["numpy_rng"])
             if "python_rng" in checkpoint and checkpoint["python_rng"] is not None:

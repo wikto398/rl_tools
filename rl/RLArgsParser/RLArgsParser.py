@@ -187,6 +187,12 @@ class RLArgsParser:
             help="Comma-separated W&B run tags",
         )
         parser.add_argument(
+            "--wandb_group",
+            type=str,
+            default=None,
+            help="W&B run group; runs sharing a group are grouped together in the dashboard",
+        )
+        parser.add_argument(
             "--wandb_mode",
             type=str,
             choices=["offline", "online", "disabled"],
@@ -345,15 +351,31 @@ def _apply_config(args, parser, config_path: str) -> None:
     else:
         args.hyperparams = {}
 
+    # ``engine_args`` forwards game-side key=value args to Godot (reward
+    # coefficients etc.). Config entries come first so explicit CLI
+    # ``--engine_args`` still win (last-wins overwrite in both the engine
+    # connector and Godot's ArgsParser).
+    engine_args = data.get("engine_args")
+    effective_engine_args: dict = {}
+    if isinstance(engine_args, dict):
+        config_entries = [f"{k}={v}" for k, v in engine_args.items()]
+        existing = list(getattr(args, "engine_args", None) or [])
+        setattr(args, "engine_args", config_entries + existing)
+        effective_engine_args = dict(engine_args)
+
     print(f"[config] loaded {config_path}")
     print(f"[config]   cli:         {cli}")
     print(f"[config]   hyperparams: {hyperparams}")
+    print(f"[config]   engine_args: {engine_args}")
     print(f"[config]   effective cli:         {effective_cli}")
     print(f"[config]   effective hyperparams: {args.hyperparams}")
+    print(f"[config]   effective engine_args: {args.engine_args}")
     args.config_report = {
         "path": config_path,
         "cli": cli,
         "hyperparams": hyperparams,
+        "engine_args": engine_args,
         "effective_cli": effective_cli,
         "effective_hyperparams": args.hyperparams,
+        "effective_engine_args": effective_engine_args,
     }

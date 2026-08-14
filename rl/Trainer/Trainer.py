@@ -409,6 +409,7 @@ class Trainer:
             dir=wandb_dir,
             entity=args.wandb_entity,
             name=args.wandb_name or os.path.basename(self.initializer.log_path),
+            group=args.wandb_group,
             tags=tags,
             mode=args.wandb_mode,
         )
