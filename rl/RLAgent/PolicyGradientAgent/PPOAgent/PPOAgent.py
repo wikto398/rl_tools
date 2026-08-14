@@ -1,12 +1,25 @@
-from tensordict import TensorDict
-import torch
 import numpy as np
+import torch
+from tensordict import TensorDict
+
 from rl_tools.game_engine.ObservationNormalizer import (
     ObservationNormalizer,
 )
 from rl_tools.game_engine.RewardNormalizer import RewardNormalizer
 from rl_tools.rl.Environment import Environment
 from rl_tools.rl.RLAgent.PolicyGradientAgent import PolicyGradientAgent
+
+# Floor applied to old/new log-probs before the PPO ratio. A stored action can
+# carry -inf (e.g. an expert-in-the-loop override outside the masks), and
+# (-inf) - (-inf) = NaN would poison the whole batch loss. Clamping to a finite
+# floor turns such entries into ratio 1 (no gradient) instead of NaN.
+LOG_PROB_FLOOR = -100.0
+
+# log-ratio clamp for the importance ratio. Expert-in-the-loop actions are often
+# low-probability under the agent's fresh policy, so exp(new - old) can explode
+# (exp(20) ~ 5e8). A tighter clamp caps that (exp(10) ~ 2.2e4) while staying far
+# above normal ratios (~1-1.5) in pure-RL training.
+LOG_RATIO_CLAMP = 10.0
 
 
 class PPOAgent(PolicyGradientAgent):
@@ -115,7 +128,10 @@ class PPOAgent(PolicyGradientAgent):
 
                 new_values = new_values.squeeze(-1)
 
-                log_ratio = (new_log_probs - old_log_probs_batch).clamp(-20.0, 20.0)
+                log_ratio = (
+                    new_log_probs.clamp(min=LOG_PROB_FLOOR)
+                    - old_log_probs_batch.clamp(min=LOG_PROB_FLOOR)
+                ).clamp(-LOG_RATIO_CLAMP, LOG_RATIO_CLAMP)
                 ratio = torch.exp(log_ratio)
                 unclipped = ratio * advantages_batch
                 clipped = (

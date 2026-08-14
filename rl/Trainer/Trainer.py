@@ -9,10 +9,13 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-
 from torch.utils.tensorboard.writer import SummaryWriter
+
+import wandb as wandb_lib
+from rl_tools.game_engine.ObservationInterface.UDPObservation import UDPObservation
 from rl_tools.rl.Callback import CallbackList
 from rl_tools.rl.Callback.ConsoleCallback import ConsoleCallback
+from rl_tools.rl.Callback.CsvCallback import CsvCallback
 from rl_tools.rl.Callback.EvalCallback import EvalCallback
 from rl_tools.rl.Callback.NetworkSaveCallback import NetworkSaveCallback
 from rl_tools.rl.Callback.StopTrainingCallback.GateStopCallback import GateStopCallback
@@ -23,12 +26,15 @@ from rl_tools.rl.Callback.StopTrainingCallback.MetricStopCallback import (
 from rl_tools.rl.Callback.TensorboardCallback import TensorboardCallback
 from rl_tools.rl.Callback.TimingCallback import TimingCallback
 from rl_tools.rl.Callback.WandbCallback import WandbCallback
-from rl_tools.rl.Factory import CallbacksFactory, NetworkFactory, NormalizersFactory
+from rl_tools.rl.Factory import (
+    CallbacksFactory,
+    ExpertFactory,
+    NetworkFactory,
+    NormalizersFactory,
+)
 from rl_tools.rl.RLAgent.PolicyGradientAgent.PPOAgent import PPOAgent
 from rl_tools.rl.RLInitializer import RLInitializer
 from rl_tools.rl.WandbWrapper import WandbWrapper
-
-import wandb as wandb_lib
 
 
 def _parse_gate_spec(args) -> list[dict]:
@@ -133,13 +139,19 @@ class Trainer:
         network_factory: NetworkFactory,
         callbacks_factory: CallbacksFactory,
         normalizers_factory: NormalizersFactory,
+        expert_factory: ExpertFactory | None = None,
+        observation_class=UDPObservation,
+        eval_callback_class=EvalCallback,
     ) -> None:
         _seed_rng(getattr(args, "seed", None))
         self.args = args
         self.network_factory = network_factory
         self.callbacks_factory = callbacks_factory
         self.normalizers_factory = normalizers_factory
-        self.initializer = RLInitializer(args)
+        self.expert_factory = expert_factory
+        self.observation_class = observation_class
+        self.eval_callback_class = eval_callback_class
+        self.initializer = RLInitializer(args, observation_class=observation_class)
 
     def run(
         self,
@@ -244,7 +256,7 @@ class Trainer:
                     for j, connector in enumerate(eval_connectors)
                 ]
                 callbacks.append(
-                    EvalCallback(
+                    self.eval_callback_class(
                         envs=eval_envs,
                         every_timesteps=args.eval_every_timesteps,
                         n_episodes=args.eval_episodes,
@@ -298,6 +310,10 @@ class Trainer:
                 sinks.append(TensorboardCallback(tensorboard_writer))
             if wandb_run is not None:
                 sinks.append(WandbCallback(wandb_run))
+            if getattr(args, "csv_metrics", False):
+                sinks.append(
+                    CsvCallback(path=os.path.join(initializer.log_path, "metrics.csv"))
+                )
             callbacks.extend(sinks)
             callback = CallbackList(callbacks)
 
@@ -307,6 +323,15 @@ class Trainer:
                 iterations = math.ceil(args.max_steps / (rollout_size * len(envs)))
             else:
                 iterations = args.iterations
+            expert_kwargs = {}
+            if self.expert_factory is not None and getattr(args, "expert_eps", 0.0) > 0:
+                expert_kwargs = {
+                    "expert": self.expert_factory.build(args),
+                    "expert_eps": float(args.expert_eps),
+                    "expert_eps_decay_steps": int(
+                        getattr(args, "expert_eps_decay_steps", 0)
+                    ),
+                }
             agent = PPOAgent(
                 network=network,
                 optimizer=optimizer,
@@ -315,6 +340,7 @@ class Trainer:
                 callback=callback,
                 observation_normalizer=obs_normalizer,
                 reward_normalizer=rew_normalizer,
+                **expert_kwargs,
                 **params,
             )
             if args.checkpoint:
@@ -360,12 +386,15 @@ class Trainer:
                 self.initializer.log_path, "trials", f"trial_{trial_index}"
             )
             trial_index += 1
-            trial = RLInitializer(self.args, log_path=trial_dir)
+            trial = RLInitializer(
+                self.args, log_path=trial_dir, observation_class=self.observation_class
+            )
             run = wandb_lib.init(
                 project=self.args.wandb_project,
                 entity=self.args.wandb_entity,
                 mode=self.args.wandb_mode,
                 dir=trial_dir,
+                tags=self._wandb_tags(),
             )
             overrides = {
                 k: v
@@ -382,13 +411,20 @@ class Trainer:
         )
         return sweep_id
 
+    def _wandb_tags(self):
+        args = self.args
+        tags = (
+            [t.strip() for t in args.wandb_tags.split(",")] if args.wandb_tags else []
+        )
+        if getattr(args, "expert_eps", 0.0) > 0 and "expert-assisted" not in tags:
+            tags.append("expert-assisted")
+        return tags or None
+
     def _init_wandb(self):
         args = self.args
         wandb_dir = os.path.abspath(self.initializer.log_path)
         os.makedirs(wandb_dir, exist_ok=True)
-        tags = (
-            [t.strip() for t in args.wandb_tags.split(",")] if args.wandb_tags else None
-        )
+        tags = self._wandb_tags()
         wrapper = WandbWrapper(
             project=args.wandb_project,
             rl_agent_params={},

@@ -137,6 +137,26 @@ class RLArgsParser:
             ),
         )
         parser.add_argument(
+            "--expert_eps",
+            type=float,
+            default=0.0,
+            help=(
+                "Fraction of training steps where a scripted expert overrides the "
+                "agent's action (expert-in-the-loop on-policy coach). All envs stay "
+                "active; only the action is replaced. 0 disables the expert."
+            ),
+        )
+        parser.add_argument(
+            "--expert_eps_decay_steps",
+            type=int,
+            default=0,
+            help=(
+                "Linearly decay --expert_eps to 0 over this many global steps "
+                "(0 = no decay). After decay the expert is inert and every env "
+                "is pure agent training."
+            ),
+        )
+        parser.add_argument(
             "--tensorboard_port",
             type=int,
             default=0,
@@ -161,6 +181,11 @@ class RLArgsParser:
             "--no_tensorboard",
             action="store_true",
             help="Disable the TensorBoard SummaryWriter (and --tensorboard_port server)",
+        )
+        parser.add_argument(
+            "--csv_metrics",
+            action="store_true",
+            help="Dump all blackboard scalars to <log_path>/metrics.csv (long format: step,key,value)",
         )
         parser.add_argument(
             "--wandb_project",
@@ -360,7 +385,7 @@ def _apply_config(args, parser, config_path: str) -> None:
     if isinstance(engine_args, dict):
         config_entries = [f"{k}={v}" for k, v in engine_args.items()]
         existing = list(getattr(args, "engine_args", None) or [])
-        setattr(args, "engine_args", config_entries + existing)
+        args.engine_args = config_entries + existing
         effective_engine_args = dict(engine_args)
 
     print(f"[config] loaded {config_path}")

@@ -1,15 +1,15 @@
-from tensordict import TensorDict
-import torch
-import numpy as np
-
 from abc import abstractmethod
 
-from rl_tools.rl.RLAgent import RLAgent
+import numpy as np
+import torch
+from tensordict import TensorDict
+
 from rl_tools.game_engine.ObservationNormalizer import (
     ObservationNormalizer,
 )
 from rl_tools.game_engine.RewardNormalizer import RewardNormalizer
 from rl_tools.rl.Environment import Environment
+from rl_tools.rl.RLAgent import RLAgent
 
 
 class PolicyGradientAgent(RLAgent):
@@ -62,6 +62,9 @@ class PolicyGradientAgent(RLAgent):
                 rollout_buffer = self.collect_rollouts()
                 self.global_step += self.rollout_size * len(self.envs)
                 self.update_steps += 1
+                self.blackboard.record(
+                    "rollout/expert_eps", self.current_expert_eps(), self.global_step
+                )
                 self.logger.debug(f"Collected rollout with {len(rollout_buffer)} steps")
                 self.callback.on_rollout_end(rollout_buffer)
                 if self._stop_requested:
@@ -171,6 +174,9 @@ class PolicyGradientAgent(RLAgent):
             batch_obs = torch.stack(self.obs)
             forward_results = self.get_action(batch_obs)
 
+            if self.current_expert_eps() > 0.0:
+                forward_results = self._apply_expert_actions(batch_obs, forward_results)
+
             step_td = TensorDict(
                 {
                     "observations": batch_obs["observation"],
@@ -230,3 +236,49 @@ class PolicyGradientAgent(RLAgent):
         rollout_td = torch.stack(rollout)
 
         return rollout_td
+
+    def _apply_expert_actions(
+        self,
+        batch_obs: TensorDict,
+        forward_results: TensorDict,
+    ) -> TensorDict:
+        """Expert-in-the-loop override (on-policy coach).
+
+        With probability ``current_expert_eps()`` per env, replace the agent's
+        sampled action with the expert's action and recompute its log-prob
+        under the current policy, so the stored ``actions``/``log_probs`` stay
+        consistent for the PPO importance ratio. Recomputes in a single batched
+        forward over the selected envs and skips entries where the expert
+        agrees with the agent. Eval never goes through here.
+        """
+        eps_now = self.current_expert_eps()
+        n = len(self.envs)
+        use_expert = torch.rand(n) < eps_now
+        if not use_expert.any():
+            return forward_results
+
+        expert_result = self.expert.action(
+            batch_obs, batch_obs.get("action_mask", None)
+        )
+        expert_actions = expert_result["action"].to(self.device)
+
+        idx = torch.nonzero(use_expert).flatten()
+        idx_d = idx.to(self.device)
+        changed = (expert_actions[idx_d] != forward_results["action"][idx_d]).any(
+            dim=-1
+        )
+        idx = idx[changed.cpu()]
+        idx_d = idx.to(self.device)
+        if idx.numel() == 0:
+            return forward_results
+
+        forward_results["action"][idx_d] = expert_actions[idx_d]
+        with torch.no_grad():
+            obs_sel = self.normalize_observation(batch_obs["observation"][idx])
+            mask_sel = batch_obs.get("action_mask", None)
+            if mask_sel is not None:
+                mask_sel = mask_sel[idx]
+            log_prob, _, _ = self.evaluate(obs_sel, expert_actions[idx_d], mask_sel)
+            forward_results["log_prob"][idx_d] = log_prob
+
+        return forward_results

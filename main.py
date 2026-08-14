@@ -1,5 +1,6 @@
 import multiprocessing as mp
 import argparse
+import importlib
 import logging
 import os
 
@@ -54,7 +55,29 @@ def parse_args():
         action="store_true",
         help="Kill existing game engine instances before starting new ones",
     )
+    parser.add_argument(
+        "--observation_class",
+        type=str,
+        default=None,
+        help=(
+            "Dotted path of the observation class to use, e.g. "
+            "torch_files.StrategyUDPObservation.StrategyUDPObservation "
+            "(default: the generic rl_tools UDPObservation / MessagePack)"
+        ),
+    )
     return parser.parse_args()
+
+
+def resolve_observation_class(spec: str | None):
+    if not spec:
+        return UDPObservation
+    module_path, _, attr = spec.rpartition(".")
+    if not module_path or not attr:
+        raise argparse.ArgumentTypeError(
+            f"invalid --observation_class {spec!r}: expected 'module.path.Attr'"
+        )
+    module = importlib.import_module(module_path)
+    return getattr(module, attr)
 
 
 def setup_instance_logger(
@@ -93,13 +116,14 @@ def start_instance(
     args: argparse.Namespace | None = None,
     log_path=None,
     role: str = "train",
+    observation_class=UDPObservation,
 ) -> GameEnvConnector:
     run_log_path = log_path or "logs"
     logger = setup_instance_logger(instance_id, run_log_path, role=role)
     logger.info(f"Starting instance {instance_id} with args: {args}")
     observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id
     action_port = CONFIG.ACTION_RECEIVER_PORT + instance_id
-    udp_observer = UDPObservation(
+    udp_observer = observation_class(
         ip=CONFIG.PYTHON_HOST, port=observation_port, logger=logger
     )
 
@@ -109,6 +133,8 @@ def start_instance(
         "observation_receiver_port": observation_port,
     }
     for key, value in vars(args).items():
+        if key == "observation_class":
+            continue
         game_engine_kwargs[key] = value
     engine_log_dir = os.path.join(run_log_path, role, "headless_game_engine")
     os.makedirs(engine_log_dir, exist_ok=True)
@@ -170,6 +196,7 @@ def main():
     else:
         CONFIG.INSTANCES = args.instances
     instances = []
+    observation_class = resolve_observation_class(args.observation_class)
     for i in range(CONFIG.INSTANCES):
         p = mp.Process(
             target=start_instance,
@@ -178,6 +205,7 @@ def main():
                 "args": args,
                 "log_path": log_path,
                 "role": "train",
+                "observation_class": observation_class,
             },
         )
         p.start()

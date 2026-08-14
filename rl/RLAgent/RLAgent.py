@@ -1,8 +1,8 @@
-from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import random
+from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +16,7 @@ from rl_tools.game_engine.RewardNormalizer import RewardNormalizer
 from rl_tools.rl.Blackboard import Blackboard
 from rl_tools.rl.Callback import Callback, NoOpCallback
 from rl_tools.rl.Environment import Environment
+from rl_tools.rl.Factory import ExpertInterface
 
 
 class RLAgent(ABC):
@@ -30,6 +31,9 @@ class RLAgent(ABC):
         logger: logging.Logger | None = None,
         callback: Callback | None = None,
         *args,
+        expert: ExpertInterface | None = None,
+        expert_eps: float = 0.0,
+        expert_eps_decay_steps: int = 0,
         gamma: float = 0.99,
         lam: float = 0.95,
         epochs: int = 5,
@@ -52,6 +56,10 @@ class RLAgent(ABC):
         self.envs = envs if isinstance(envs, list) else [envs]
         self.args = args
         self.kwargs = kwargs
+
+        self.expert = expert
+        self.expert_eps = expert_eps
+        self.expert_eps_decay_steps = expert_eps_decay_steps
 
         self.global_step = 0
         self.update_steps = 0
@@ -91,6 +99,16 @@ class RLAgent(ABC):
             obs = self.normalize_observation(obs["observation"])
             result = self.network(obs, action_mask)
         return result
+
+    def current_expert_eps(self) -> float:
+        """Current expert-in-the-loop override probability (decaying to 0)."""
+        if self.expert is None or self.expert_eps <= 0.0:
+            return 0.0
+        if self.expert_eps_decay_steps <= 0:
+            return self.expert_eps
+        return self.expert_eps * max(
+            0.0, 1.0 - self.global_step / self.expert_eps_decay_steps
+        )
 
     def save(self, path: str):
         payload = {

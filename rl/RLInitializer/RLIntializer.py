@@ -16,8 +16,14 @@ GODOT_ARG_ALLOWLIST = {"log_level", "log_to_file", "seed", "render"}
 
 
 class RLInitializer:
-    def __init__(self, args: argparse.Namespace, log_path: str | None = None):
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        log_path: str | None = None,
+        observation_class=UDPObservation,
+    ):
         self.args = args
+        self.observation_class = observation_class
         self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.log_path = log_path or f"logs/{self.timestamp}"
         os.makedirs(self.log_path, exist_ok=True)
@@ -96,6 +102,7 @@ class RLInitializer:
                 log_path=self.log_path,
                 render=render,
                 role=role,
+                observation_class=self.observation_class,
             )
             self.connectors.append(connector)
             started.append(connector)
@@ -162,6 +169,7 @@ def start_instance(
     log_path: str = "logs",
     render: bool | None = None,
     role: str = "train",
+    observation_class=UDPObservation,
 ) -> GameEnvConnector:
     """Start a single instance, connect it, and return the connector."""
     quiet = bool(args is not None and getattr(args, "quiet", False))
@@ -171,7 +179,7 @@ def start_instance(
     observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id
     action_port = CONFIG.ACTION_RECEIVER_PORT + instance_id
 
-    udp_observer = UDPObservation(
+    udp_observer = observation_class(
         ip=CONFIG.PYTHON_HOST,
         port=observation_port,
         logger=logger,

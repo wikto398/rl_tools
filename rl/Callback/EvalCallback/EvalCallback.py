@@ -24,6 +24,9 @@ class EvalCallback(Callback):
         max_episode_steps: int = 10_000,
         log_prefix: str = "eval",
         deterministic: bool = True,
+        won_key: str = "won",
+        lost_key: str = "lost",
+        turns_key: str = "turns",
     ) -> None:
         super().__init__()
         if not envs:
@@ -42,6 +45,9 @@ class EvalCallback(Callback):
         self.max_episode_steps = max_episode_steps
         self.log_prefix = log_prefix
         self.deterministic = deterministic
+        self.won_key = won_key
+        self.lost_key = lost_key
+        self.turns_key = turns_key
         self._last_eval_step = 0
         self._eval_run_index = 0
         self._pool = ThreadPoolExecutor(max_workers=len(self.envs))
@@ -117,69 +123,31 @@ class EvalCallback(Callback):
         _log("n_wins", n_wins)
         _log("win_rate", n_wins / wins_arr.size)
 
-        # Summary-based stats only for episodes that ended via the game terminal
-        # (truncated episodes carry no reward_breakdown).
-        valid = [info for info in infos if info.get("reward_breakdown")]
-        if not valid:
-            return
-        n_valid = len(valid)
-
-        win_turns = [
-            float(info["turns"])
-            for info in valid
-            if info.get("won") and info.get("turns") is not None
-        ]
-        loss_turns = [
-            float(info["turns"])
-            for info in valid
-            if info.get("lost") and info.get("turns") is not None
-        ]
-        if win_turns:
-            _log("mean_win_turns", np.mean(win_turns))
-        if loss_turns:
-            _log("mean_loss_turns", np.mean(loss_turns))
-
-        breakdown_totals: dict[str, float] = {}
-        for info in valid:
-            for key, value in info.get("reward_breakdown", {}).items():
-                breakdown_totals[key] = breakdown_totals.get(key, 0.0) + float(value)
-        for key, value in sorted(breakdown_totals.items()):
-            _log(f"breakdown/{key}", value / n_valid)
-
-        for field in ("buildings_started", "buildings_completed"):
-            totals: dict[str, float] = {}
-            for info in valid:
-                for key, value in info.get(field, {}).items():
-                    totals[key] = totals.get(key, 0.0) + float(value)
-            for key, value in sorted(totals.items()):
-                _log(f"{field}/{key}", value / n_valid)
-
-        population = [float(info.get("population", 0.0)) for info in valid]
-        working_population = [
-            float(info.get("working_population", 0.0)) for info in valid
-        ]
-        total_resources = [float(info.get("total_resources", 0.0)) for info in valid]
-        production = [float(sum(info.get("production", []) or [])) for info in valid]
-        _log("mean_end_population", np.mean(population))
-        _log("mean_end_working_population", np.mean(working_population))
-        _log("mean_end_total_resources", np.mean(total_resources))
-        _log("mean_end_production", np.mean(production))
-
+        latest: dict[str, float] = {
+            "win_rate": n_wins / wins_arr.size,
+            "n_wins": n_wins,
+            "n_episodes": int(returns_arr.size),
+            "mean_return": float(returns_arr.mean()),
+            "mean_length": float(lengths_arr.mean()),
+        }
+        summary = self._log_episode_summary(infos, step, _log)
+        if summary:
+            latest.update(summary)
         blackboard.set("eval/latest_step", step)
-        blackboard.set(
-            "eval/latest",
-            {
-                "win_rate": n_wins / wins_arr.size,
-                "n_wins": n_wins,
-                "n_episodes": int(returns_arr.size),
-                "mean_return": float(returns_arr.mean()),
-                "mean_length": float(lengths_arr.mean()),
-                "mean_end_population": float(np.mean(population)),
-                "mean_end_working_population": float(np.mean(working_population)),
-                "mean_end_total_resources": float(np.mean(total_resources)),
-                "mean_end_production": float(np.mean(production)),
-            },
-        )
+        blackboard.set("eval/latest", latest)
+
+    def _log_episode_summary(
+        self, infos: list[dict], step: int, log
+    ) -> dict[str, float] | None:
+        """Game hook for terminal-episode summary metrics.
+
+        ``infos`` are the completed eval episodes (already sliced to
+        ``n_episodes``); ``log(key, value)`` records a scalar under the eval
+        prefix. Return extra fields to merge into ``eval/latest``. The default
+        implementation is a no-op so games without a terminal summary still get
+        a valid generic eval.
+        """
+        return None
 
     def _collect_episodes(
         self,
@@ -224,7 +192,7 @@ class EvalCallback(Callback):
                 if finished:
                     returns.append(ep_ret[i])
                     lengths.append(ep_len[i])
-                    wins.append(bool(info.get("won", False)))
+                    wins.append(bool(info.get(self.won_key, False)))
                     infos.append(info if info is not None else {})
                     ep_ret[i] = 0.0
                     ep_len[i] = 0
