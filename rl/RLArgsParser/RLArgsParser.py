@@ -9,7 +9,7 @@ from rl_tools.utils.config import CONFIG
 
 class RLArgsParser:
     @staticmethod
-    def parse_args():
+    def parse_args(argv: list[str] | None = None):
         parser = argparse.ArgumentParser(
             description="RL Tools - A framework for training reinforcement learning agents with custom game environments."
         )
@@ -331,7 +331,72 @@ class RLArgsParser:
             help="Resume a prior evolution run from <root_dir> (loads the latest "
             "state/gen_*.json snapshot and continues from the next generation).",
         )
-        args = parser.parse_args()
+        parser.add_argument(
+            "--space",
+            type=str,
+            default=None,
+            help="Evolution: 'module:Class' providing a genome_space() classmethod "
+            "(default: evolution.space from --config).",
+        )
+        parser.add_argument(
+            "--child_runner",
+            type=str,
+            default=None,
+            help="Evolution: 'module:Class' ChildRunner subclass that runs one child "
+            "(default: evolution.child_runner from --config).",
+        )
+        parser.add_argument(
+            "--executor",
+            type=str,
+            choices=["process", "docker"],
+            default=None,
+            help="Evolution: run each child as a local process (default) or as its "
+            "own Docker container.",
+        )
+        parser.add_argument(
+            "--image",
+            type=str,
+            default=None,
+            help="Evolution: Docker image used for children when --executor docker.",
+        )
+        parser.add_argument(
+            "--docker_network",
+            type=str,
+            default=None,
+            help="Evolution: Docker --network for child containers (e.g. bridge or "
+            "host). Default is Docker's bridge, which needs no port offsets.",
+        )
+        parser.add_argument(
+            "--docker_cpus",
+            type=float,
+            default=None,
+            help="Evolution: CPU limit for each child container.",
+        )
+        parser.add_argument(
+            "--docker_memory",
+            type=str,
+            default=None,
+            help="Evolution: memory limit for each child container (e.g. 32g).",
+        )
+        parser.add_argument(
+            "--docker_shm",
+            type=str,
+            default=None,
+            help="Evolution: --shm-size for each child container (e.g. 2g).",
+        )
+        parser.add_argument(
+            "--docker_extra_args",
+            action="append",
+            default=None,
+            help="Evolution: extra `docker run` args, repeatable (e.g. --docker_extra_args --ipc=host).",
+        )
+        parser.add_argument(
+            "--no_docker_gpu",
+            action="store_true",
+            help="Evolution: do not pass ROCm device flags (/dev/kfd, /dev/dri) to "
+            "child containers.",
+        )
+        args = parser.parse_args(argv)
         if args.config:
             _apply_config(args, parser, args.config)
         return args

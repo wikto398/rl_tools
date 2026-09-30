@@ -1,0 +1,25 @@
+# Build context for the reusable base image is this submodule (rl_tools/).
+# Docker reads .dockerignore (not .gitignore), so the entries are explicit.
+# The host .venv alone is ~13 GB and must never be sent to the daemon.
+
+# --- VCS ---
+.git
+**/.git
+
+# --- Python ---
+.venv
+**/__pycache__
+**/*.py[cod]
+.ruff_cache
+.pytest_cache
+*.egg-info
+**/*.egg-info
+
+# --- run artifacts / secrets ---
+logs
+.env
+.vscode
+
+# --- editor / docs ---
+.idea
+.lh

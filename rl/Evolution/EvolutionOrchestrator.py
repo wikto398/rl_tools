@@ -18,37 +18,23 @@ from rl_tools.rl.Evolution.BudgetSchedule import BudgetSchedule
 from rl_tools.rl.Evolution.GenomeSpace import GenomeSpace
 from rl_tools.rl.Evolution.SaveEvolutionCallback import SaveEvolutionCallback
 from rl_tools.rl.Evolution.StopEvolutionCallback import StopEvolutionCallback
+from rl_tools.rl.Evolution.launchers import ChildLauncher, Job, build_launcher
 
 logger = logging.getLogger("Evolution")
-
-
-def _spawn_child(
-    runner_spec: str, base_args: dict, genome: dict, child_config: dict
-) -> None:
-    """Picklable ``multiprocessing`` target: resolves the child runner class and
-    runs it. ``runner_spec`` is ``module.path:ClassName`` (or a plain
-    ``module.ClassName`` for backwards compatibility). Importing the runner (and
-    its torch/ROCm stack) happens inside the child process only, so the
-    orchestrator parent stays torch-free."""
-    import importlib
-
-    if ":" in runner_spec:
-        module_name, _, attr = runner_spec.partition(":")
-    else:
-        module_name, _, attr = runner_spec.rpartition(".")
-    cls = getattr(importlib.import_module(module_name), attr)
-    cls.run(base_args, genome, child_config)
 
 
 class EvolutionOrchestrator:
     """Generational GA over Trainers.
 
-    Each generation samples/evolves ``population`` genomes; children run as
-    separate ``multiprocessing.Process``es (``spawn``), ``workers`` at a time
-    (rolling batch). Each child is one ``Trainer`` run (via a ``ChildRunner``
-    subclass) and reports its fitness by writing ``fitness.json``. Selection is
-    lexicographic over ``(win_rate, -mean_win_turns, buildings_completed)``
-    with elitism + tournament, followed by crossover/mutation.
+    Each generation samples/evolves ``population`` genomes; children run
+    ``workers`` at a time (rolling batch). How a child is executed is pluggable
+    via :class:`~rl_tools.rl.Evolution.launchers.ChildLauncher`: a local
+    ``multiprocessing`` process (default) or its own Docker container
+    (``executor: docker``). Each child is one ``Trainer`` run (via a
+    ``ChildRunner`` subclass) and reports its fitness by writing
+    ``fitness.json``. Selection is lexicographic over
+    ``(win_rate, -mean_win_turns, buildings_completed)`` with elitism +
+    tournament, followed by crossover/mutation.
     """
 
     DEFAULT_EVO_CFG: ClassVar[dict] = {
@@ -72,6 +58,19 @@ class EvolutionOrchestrator:
         "build_gate_patience": 3,
         "wandb_group": None,
         "port_stride": 4,
+        # --- child execution backend ---
+        # "process": one multiprocessing child per genome (local dev).
+        # "docker":  one `docker run` container per genome (cloud).
+        "executor": "process",
+        "image": None,
+        "container_prefix": "evo",
+        "gpu": True,
+        "network": None,
+        "cpus": None,
+        "memory": None,
+        "shm_size": None,
+        "env": None,
+        "extra_docker_args": None,
     }
 
     def __init__(
@@ -84,6 +83,7 @@ class EvolutionOrchestrator:
         root_dir: str | None = None,
         generation_callbacks: list[Callback] | None = None,
         resume: bool = False,
+        launcher: ChildLauncher | None = None,
     ) -> None:
         self.base_args = base_args
         self.base_args_dict = vars(base_args)
@@ -102,10 +102,14 @@ class EvolutionOrchestrator:
             raise ValueError("population and workers must be >= 1")
         cfg["workers"] = min(cfg["workers"], cfg["population"])
         self.seed = int(getattr(base_args, "seed", None) or cfg.get("seed") or 42)
-        self.root_dir = root_dir or self._default_root_dir()
+        # Absolute so child paths match what containers see through the
+        # root_dir bind mount (the DockerLauncher mounts root_dir verbatim).
+        self.root_dir = os.path.abspath(root_dir or self._default_root_dir())
         os.makedirs(os.path.join(self.root_dir, "state"), exist_ok=True)
         self.resume = bool(resume)
         self._stop_requested = False
+        self._active_jobs: list[tuple[Job, int]] = []
+        self.launcher = launcher or build_launcher(cfg, root_dir=self.root_dir)
         self._pid_path = os.path.join(self.root_dir, "pid")
         self._setup_logging()
         self.exp_name = (
@@ -141,10 +145,19 @@ class EvolutionOrchestrator:
     # --- main loop ---
 
     def evolve(self) -> dict:
-        multiprocessing.set_start_method("spawn", force=True)
+        if self.launcher.kind == "process":
+            multiprocessing.set_start_method("spawn", force=True)
         wandb_run = self._init_wandb_run()
         self._install_signal_handlers()
         self._write_pid()
+        logger.info(
+            f"executor={self.launcher.kind}"
+            + (
+                f" image={self.cfg.get('image')}"
+                if self.launcher.kind == "docker"
+                else ""
+            )
+        )
         stop_callbacks = [
             cb
             for cb in self.generation_callbacks.callbacks
@@ -210,6 +223,13 @@ class EvolutionOrchestrator:
             for cb in stop_callbacks:
                 cb.stop()
             self._remove_pid()
+            for job, _ in list(self._active_jobs):
+                try:
+                    job.terminate()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
+            self._active_jobs = []
+            self.launcher.close()
             if wandb_run is not None:
                 wandb_run.finish()
         with open(os.path.join(self.root_dir, "best.json"), "w") as f:
@@ -307,41 +327,48 @@ class EvolutionOrchestrator:
         budget = self.budget(generation, self.cfg["generations"])
         workers = self.cfg["workers"]
         pending = list(enumerate(genomes))
-        active: list[tuple[multiprocessing.Process, int]] = []
+        active: list[tuple[Job, int]] = []
         results: dict[int, dict] = {}
+        self._active_jobs = active
 
-        while pending or active:
-            while pending and len(active) < workers:
-                child_index, genome = pending.pop(0)
-                child_config = self._child_config(child_index, generation, budget)
-                proc = multiprocessing.Process(
-                    target=_spawn_child,
-                    args=(
-                        self.child_runner_path,
-                        self.base_args_dict,
-                        genome,
-                        child_config,
-                    ),
-                    name=f"evo-g{generation}-c{child_index}",
-                )
-                proc.start()
-                active.append((proc, child_index))
-                logger.info(
-                    f"  started child {child_index} dir={child_config['child_dir']}"
-                )
+        try:
+            while pending or active:
+                while pending and len(active) < workers:
+                    child_index, genome = pending.pop(0)
+                    child_config = self._child_config(child_index, generation, budget)
+                    job = self.launcher.launch(
+                        child_index=child_index,
+                        generation=generation,
+                        runner_spec=self.child_runner_path,
+                        base_args=self.base_args_dict,
+                        genome=genome,
+                        child_config=child_config,
+                    )
+                    active.append((job, child_index))
+                    logger.info(
+                        f"  started child {child_index} as {job.name!r} "
+                        f"dir={child_config['child_dir']}"
+                    )
 
-            finished = [a for a in active if not a[0].is_alive()]
-            for proc, child_index in finished:
-                proc.join()
-                active.remove((proc, child_index))
-                fitness = self._read_fitness(proc, child_index, generation)
-                results[child_index] = fitness
-                logger.info(
-                    f"  finished child {child_index} (exit={proc.exitcode}) "
-                    f"win_rate={fitness.get('win_rate')}"
-                )
-            if not finished:
-                time.sleep(2.0)
+                finished = [a for a in active if not a[0].poll()]
+                for job, child_index in finished:
+                    exit_code = job.wait()
+                    active.remove((job, child_index))
+                    fitness = self._read_fitness(child_index, generation)
+                    results[child_index] = fitness
+                    logger.info(
+                        f"  finished child {child_index} (exit={exit_code}) "
+                        f"win_rate={fitness.get('win_rate')}"
+                    )
+                if not finished:
+                    time.sleep(2.0)
+        finally:
+            for job, _ in active:
+                try:
+                    job.terminate()
+                except Exception as e:  # noqa: BLE001 - best-effort cleanup
+                    logger.warning(f"  failed to terminate {job.name}: {e}")
+            self._active_jobs = []
 
         return [results[i] for i in range(len(genomes))]
 
@@ -357,7 +384,9 @@ class EvolutionOrchestrator:
             "eval_every": self.cfg["eval_every"],
             "max_steps": budget,
             "seed": self.seed + (generation * self.cfg["population"] + child_index),
-            "port_offset": child_index * self.cfg["port_stride"],
+            "port_offset": self.launcher.port_offset(
+                child_index, self.cfg["port_stride"]
+            ),
             "wandb_name": f"evo-{self.exp_name}-g{generation}-c{child_index}",
             "wandb_group": self.wandb_group,
             "wandb_extra_tags": f"evolution,gen_{generation},child_{child_index}",
@@ -366,9 +395,7 @@ class EvolutionOrchestrator:
             "build_gate_patience": self.cfg["build_gate_patience"],
         }
 
-    def _read_fitness(
-        self, proc: multiprocessing.Process, child_index: int, generation: int
-    ) -> dict:
+    def _read_fitness(self, child_index: int, generation: int) -> dict:
         path = os.path.join(
             self.root_dir,
             "children",

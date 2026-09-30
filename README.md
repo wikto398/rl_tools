@@ -18,3 +18,23 @@ RLAgent was designed in a way to be really flexible with network architectures. 
 
 ### Environment
 Wrapper for GameEnvConnector to be used during training.
+
+## Docker
+### Images
+`docker/` builds two reusable, game-agnostic images, in order (see
+`docker/README.md` and `docker/build.sh`):
+
+| Image | Dockerfile | Context | Contents |
+|---|---|---|---|
+| `rl-base:rocm7.2.4-py3.12` | `docker/Dockerfile` | `rl_tools/` | ROCm + PyTorch, `uv`, this project's deps in `/opt/venv` |
+| `rl-godot:4.7.2` | `docker/godot/Dockerfile` | `docker/godot/` | Godot runtime + its runtime libs, `FROM` the base |
+
+```bash
+docker/build.sh
+```
+
+Version knobs are build args (`ROCM_VERSION`, `UBUNTU_VERSION`, `PYTHON_VERSION`,
+`TORCH_VERSION`, `GODOT_VERSION`). The venv lives at `/opt/venv` (outside any
+`/app` bind-mount a game might add), and `/app` is the default working dir.
+Other engines extend `rl-base` from a sibling directory; games extend
+`rl-godot`.
