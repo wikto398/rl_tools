@@ -66,6 +66,23 @@ class Callback(ABC):
     @abstractmethod
     def on_update_end(self, update_info: dict) -> None: ...
 
+    # --- generation lifecycle hooks (evolution) ---
+    # Default no-ops so existing agent-scoped callbacks are unaffected. Invoked
+    # by the evolution orchestrator (parent process) around each generation.
+
+    def on_generation_start(
+        self, generation: int, budget: int, genomes: list[dict]
+    ) -> None:
+        pass
+
+    def on_generation_end(
+        self,
+        generation: int,
+        ranked: list[tuple[dict, dict]],
+        next_population: list[dict],
+    ) -> None:
+        pass
+
 
 class NoOpCallback(Callback):
     """Default callback that performs no work."""

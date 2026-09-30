@@ -151,16 +151,29 @@ class Trainer:
         self.expert_factory = expert_factory
         self.observation_class = observation_class
         self.eval_callback_class = eval_callback_class
-        self.initializer = RLInitializer(args, observation_class=observation_class)
+        self.initializer = None
+
+    def _ensure_initializer(self) -> RLInitializer:
+        """Create (once) and return the default RLInitializer for this Trainer.
+
+        Lazy so a caller-provided initializer (e.g. evolutionary children with
+        their own log dir) does not create a stray ``logs/<ts>`` directory.
+        """
+        if self.initializer is None:
+            self.initializer = RLInitializer(
+                self.args, observation_class=self.observation_class
+            )
+        return self.initializer
 
     def run(
         self,
         overrides: dict | None = None,
         wandb_run=None,
         initializer: RLInitializer | None = None,
+        extra_callbacks: list | None = None,
     ) -> None:
         args = self.args
-        initializer = initializer or self.initializer
+        initializer = initializer or self._ensure_initializer()
         base = getattr(args, "hyperparams", None) or {}
         params = {**base, **(overrides or {})}
         lr = params.pop("lr", self.DEFAULT_LR)
@@ -223,7 +236,7 @@ class Trainer:
                     "--tensorboard_port is ignored because --no_tensorboard is set"
                 )
             if wandb_run is None and args.wandb_project:
-                wandb_run = self._init_wandb()
+                wandb_run = self._init_wandb(initializer=initializer)
             if wandb_run is not None and params:
                 wandb_run.config.update(params)
 
@@ -302,6 +315,7 @@ class Trainer:
                     ),
                 ]
             )
+            callbacks.extend(extra_callbacks or [])
             # Sinks consume the agent blackboard. Order matters: EvalCallback runs
             # its eval inside on_update_end, so sinks must come after it to pick up
             # eval metrics in the same update cycle.
@@ -370,7 +384,7 @@ class Trainer:
                 f"Sweeps require the W&B backend; --wandb_mode={self.args.wandb_mode} "
                 "is not supported (use --wandb_mode online or a self-hosted server)"
             )
-        self.initializer.main_logger.info(
+        self._ensure_initializer().main_logger.info(
             "[config] loaded sweep config %s: %s",
             self.args.sweep_config,
             sweep_config,
@@ -383,7 +397,7 @@ class Trainer:
             nonlocal trial_index
             _seed_rng(self.args.seed)
             trial_dir = os.path.join(
-                self.initializer.log_path, "trials", f"trial_{trial_index}"
+                self._ensure_initializer().log_path, "trials", f"trial_{trial_index}"
             )
             trial_index += 1
             trial = RLInitializer(
@@ -416,13 +430,22 @@ class Trainer:
         tags = (
             [t.strip() for t in args.wandb_tags.split(",")] if args.wandb_tags else []
         )
+        run_type = "sweep" if getattr(args, "sweep_config", None) else "single"
+        if run_type not in tags:
+            tags.append(run_type)
         if getattr(args, "expert_eps", 0.0) > 0 and "expert-assisted" not in tags:
             tags.append("expert-assisted")
+        extra = getattr(args, "wandb_extra_tags", None)
+        if extra:
+            for t in (x.strip() for x in extra.split(",")):
+                if t and t not in tags:
+                    tags.append(t)
         return tags or None
 
-    def _init_wandb(self):
+    def _init_wandb(self, initializer=None):
         args = self.args
-        wandb_dir = os.path.abspath(self.initializer.log_path)
+        initializer = initializer or self._ensure_initializer()
+        wandb_dir = os.path.abspath(initializer.log_path)
         os.makedirs(wandb_dir, exist_ok=True)
         tags = self._wandb_tags()
         wrapper = WandbWrapper(
@@ -444,13 +467,13 @@ class Trainer:
             },
             dir=wandb_dir,
             entity=args.wandb_entity,
-            name=args.wandb_name or os.path.basename(self.initializer.log_path),
+            name=args.wandb_name or os.path.basename(initializer.log_path),
             group=args.wandb_group,
             tags=tags,
             mode=args.wandb_mode,
         )
         wandb_run = wrapper.init()
-        self.initializer.main_logger.info(
+        initializer.main_logger.info(
             f"W&B run '{wandb_run.name}' ({args.wandb_mode}) id={wandb_run.id}, "
             f"dir={wandb_dir}"
         )

@@ -176,8 +176,9 @@ def start_instance(
     logger = setup_instance_logger(instance_id, log_path, role=role, quiet=quiet)
     logger.info(f"Starting instance {instance_id} with args: {args}")
 
-    observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id
-    action_port = CONFIG.ACTION_RECEIVER_PORT + instance_id
+    port_offset = int(getattr(args, "port_offset", 0)) if args is not None else 0
+    observation_port = CONFIG.OBSERVATION_RECEIVER_PORT + instance_id + port_offset
+    action_port = CONFIG.ACTION_RECEIVER_PORT + instance_id + port_offset
 
     udp_observer = observation_class(
         ip=CONFIG.PYTHON_HOST,

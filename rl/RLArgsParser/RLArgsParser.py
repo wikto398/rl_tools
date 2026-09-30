@@ -65,6 +65,12 @@ class RLArgsParser:
             help="Number of dedicated Godot instances used for evaluation",
         )
         parser.add_argument(
+            "--port_offset",
+            type=int,
+            default=0,
+            help="Offset added to the UDP port base (5000/5500) for every instance, so parallel processes can avoid port collisions",
+        )
+        parser.add_argument(
             "--eval_episodes",
             type=int,
             default=5,
@@ -212,6 +218,12 @@ class RLArgsParser:
             help="Comma-separated W&B run tags",
         )
         parser.add_argument(
+            "--wandb_extra_tags",
+            type=str,
+            default=None,
+            help="Comma-separated W&B tags appended to --wandb_tags and the auto-generated ones (single/sweep, expert-assisted)",
+        )
+        parser.add_argument(
             "--wandb_group",
             type=str,
             default=None,
@@ -311,6 +323,13 @@ class RLArgsParser:
             default=None,
             help="Path to a YAML config file with 'hyperparams' and 'cli' sections "
             "(non-sweep runs only; explicit CLI flags override the file).",
+        )
+        parser.add_argument(
+            "--resume_evolution",
+            type=str,
+            default=None,
+            help="Resume a prior evolution run from <root_dir> (loads the latest "
+            "state/gen_*.json snapshot and continues from the next generation).",
         )
         args = parser.parse_args()
         if args.config:

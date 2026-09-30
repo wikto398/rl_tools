@@ -70,3 +70,18 @@ class CallbackList(Callback):
     def on_update_end(self, update_info: dict) -> None:
         for callback in list(self.callbacks):
             callback.on_update_end(update_info)
+
+    def on_generation_start(
+        self, generation: int, budget: int, genomes: list[dict]
+    ) -> None:
+        for callback in list(self.callbacks):
+            callback.on_generation_start(generation, budget, genomes)
+
+    def on_generation_end(
+        self,
+        generation: int,
+        ranked: list[tuple[dict, dict]],
+        next_population: list[dict],
+    ) -> None:
+        for callback in list(self.callbacks):
+            callback.on_generation_end(generation, ranked, next_population)
