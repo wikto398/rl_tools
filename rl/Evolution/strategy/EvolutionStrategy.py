@@ -27,6 +27,10 @@ class Stats:
 
     completed: int = 0
     completed_steps: int = 0
+    #: children that produced no usable fitness (crashed / zero steps)
+    crashed: int = 0
+    #: children that hit an early-stop gate
+    stopped_early: int = 0
     started_at: float = field(default_factory=time.time)
 
     def elapsed(self) -> float:

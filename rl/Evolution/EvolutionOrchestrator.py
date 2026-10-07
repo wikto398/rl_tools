@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import random
 import signal
+import statistics
 import time
 from datetime import datetime
 from typing import ClassVar
@@ -22,7 +23,10 @@ from rl_tools.rl.Evolution.strategy.EvolutionStrategy import (
     Stats,
 )
 from rl_tools.rl.Evolution.strategy.Individual import Individual
-from rl_tools.rl.Evolution.strategy.Population import Population
+from rl_tools.rl.Evolution.strategy.Population import (
+    WORST_KEY,
+    Population,
+)
 
 logger = logging.getLogger("Evolution")
 
@@ -53,6 +57,8 @@ class EvolutionOrchestrator:
         "build_gate_patience": 3,
         "wandb_group": None,
         "port_stride": 4,
+        #: log the pool table to W&B every N completed children (0 = never)
+        "wandb_table_every": 20,
         # --- strategy selection ---
         "strategy": "generational",
         # --- hard stops (any strategy; useful for cloud spend) ---
@@ -125,6 +131,8 @@ class EvolutionOrchestrator:
         self._active_jobs: dict[Job, Individual] = {}
         self._phase_budget = 0
         self._wandb_run = None
+        self._run_metrics_defined = False
+        self._last_table_at = 0
         self.launcher = launcher or build_launcher(cfg, root_dir=self.root_dir)
         self._pid_path = os.path.join(self.root_dir, "pid")
         self._setup_logging()
@@ -230,6 +238,12 @@ class EvolutionOrchestrator:
                     individual.stopped_early = bool(
                         (individual.fitness or {}).get("stopped_early", False)
                     )
+                    if (individual.fitness or {}).get(
+                        "errored"
+                    ) or individual.global_step == 0:
+                        stats.crashed += 1
+                    if individual.stopped_early:
+                        stats.stopped_early += 1
                     logger.info(
                         f"  finished {individual.phase}/c{individual.slot} "
                         f"(exit={exit_code}) "
@@ -238,6 +252,8 @@ class EvolutionOrchestrator:
                     self.strategy.on_child_finished(
                         individual, individual.fitness, population, stats, rng
                     )
+                if finished:
+                    self._log_run_stats(population, stats)
 
                 done, reason = self._should_stop(population, stats)
                 if done:
@@ -246,7 +262,7 @@ class EvolutionOrchestrator:
                 if not launched and not finished:
                     time.sleep(float(self.cfg["poll_interval"]))
 
-            summary = self._summary(population)
+            summary = self._summary(population, stats)
             if self._wandb_run is not None:
                 self._finish_wandb(self._wandb_run, summary)
         finally:
@@ -277,11 +293,24 @@ class EvolutionOrchestrator:
                 return True, f"max_steps={self.cfg['max_steps']}"
         return self.strategy.should_stop(population, stats)
 
-    def _summary(self, population: Population) -> dict:
+    def _summary(self, population: Population, stats: Stats) -> dict:
         best = population.best
-        if best is None:
-            return {"best_genome": None, "best_fitness": None}
-        return {"best_genome": best.genome, "best_fitness": best.fitness}
+        evaluated = population.evaluated()
+        win_rates = [
+            float((m.fitness or {}).get("win_rate", 0.0) or 0.0) for m in evaluated
+        ]
+        summary = {
+            "best_genome": best.genome if best else None,
+            "best_fitness": best.fitness if best else None,
+            "completed_children": stats.completed,
+            "completed_steps": stats.completed_steps,
+            "crashed_children": stats.crashed,
+            "elapsed_hours": round(stats.elapsed() / 3600.0, 4),
+        }
+        if win_rates:
+            summary["mean_win_rate"] = sum(win_rates) / len(win_rates)
+            summary["median_win_rate"] = statistics.median(win_rates)
+        return summary
 
     # --- strategy hooks (EvolutionHooks) -------------------------------------
 
@@ -329,6 +358,9 @@ class EvolutionOrchestrator:
     def _launch(self, individual: Individual) -> Job:
         individual.child_dir = self._child_dir(individual)
         child_config = self._child_config(individual)
+        if child_config.get("checkpoint"):
+            # remember the lineage for the W&B pool table
+            individual.meta["warm_start_from"] = child_config["checkpoint"]
         job = self.launcher.launch(
             child_index=individual.slot,
             generation=individual.phase_index,
@@ -390,6 +422,122 @@ class EvolutionOrchestrator:
         except (OSError, json.JSONDecodeError):
             # crashed / no fitness -> worst (win_rate -1 sorts below everything)
             return {"win_rate": -1.0}
+
+    # --- W&B run stats (every strategy) --------------------------------------
+
+    def _define_run_metrics(self) -> None:
+        """Plot ``evolution/run/*`` against children completed.
+
+        Keeps these series independent of the generational ``step=generation``
+        logs, so both can coexist on one W&B run.
+        """
+        run = self._wandb_run
+        if run is None or self._run_metrics_defined:
+            return
+        self._run_metrics_defined = True
+        try:
+            run.define_metric("evolution/run/children", hidden=True)
+            run.define_metric("evolution/run/*", step_metric="evolution/run/children")
+        except Exception as e:  # noqa: BLE001 - metrics are best-effort
+            logger.warning(f"could not define wandb run metrics: {e}")
+
+    def _log_run_stats(self, population: Population, stats: Stats) -> None:
+        run = self._wandb_run
+        if run is None:
+            return
+        self._define_run_metrics()
+
+        members = population.evaluated()
+        # Crashed children (win_rate -1) are counted separately below; folding
+        # them into the averages would bury the fitness signal.
+        successful = [
+            m for m in members if self.strategy.fitness_key(m.fitness) != WORST_KEY
+        ]
+        fitnesses = [m.fitness or {} for m in successful]
+        win_rates = [float(f.get("win_rate", 0.0) or 0.0) for f in fitnesses]
+        buildings = [float(f.get("buildings_completed", 0.0) or 0.0) for f in fitnesses]
+        steps = [int(f.get("global_step", 0) or 0) for f in fitnesses]
+        returns = [
+            float(f["mean_return"])
+            for f in fitnesses
+            if f.get("mean_return") is not None
+        ]
+        elapsed = max(stats.elapsed(), 1e-9)
+
+        scalars = {
+            "evolution/run/children": stats.completed,
+            "evolution/run/children_running": len(self._active_jobs),
+            "evolution/run/pool_size": len(population.members),
+            "evolution/run/completed_steps": stats.completed_steps,
+            "evolution/run/elapsed_hours": elapsed / 3600.0,
+            "evolution/run/crashed": stats.crashed,
+            "evolution/run/stopped_early": stats.stopped_early,
+        }
+        if fitnesses:
+            scalars.update(
+                {
+                    "evolution/run/mean_win_rate": sum(win_rates) / len(win_rates),
+                    "evolution/run/median_win_rate": statistics.median(win_rates),
+                    "evolution/run/best_win_rate": max(win_rates),
+                    "evolution/run/worst_win_rate": min(win_rates),
+                    "evolution/run/mean_buildings_completed": sum(buildings)
+                    / len(buildings),
+                    "evolution/run/best_buildings_completed": max(buildings),
+                    "evolution/run/mean_global_step": sum(steps) / len(steps),
+                }
+            )
+        if returns:
+            scalars["evolution/run/mean_return"] = sum(returns) / len(returns)
+        if elapsed > 1.0:  # meaningless over a just-started run
+            scalars["evolution/run/steps_per_second"] = stats.completed_steps / elapsed
+        try:
+            run.log(scalars)
+        except Exception as e:  # noqa: BLE001 - metrics are best-effort
+            logger.warning(f"failed to log run stats to wandb: {e}")
+
+        every = int(self.cfg.get("wandb_table_every", 20) or 0)
+        if every and stats.completed - self._last_table_at >= every:
+            self._last_table_at = stats.completed
+            self._log_pool_table(run, population)
+
+    def _log_pool_table(self, run, population: Population) -> None:
+        ranked = population.ranked()
+
+        def _cell(individual: Individual, key: str):
+            value = (individual.fitness or {}).get(key)
+            return value
+
+        try:
+            table = wandb.Table(
+                columns=[
+                    "phase",
+                    "slot",
+                    "win_rate",
+                    "mean_win_turns",
+                    "buildings_completed",
+                    "global_step",
+                    "stopped_early",
+                    "warm_start_from",
+                    "genome",
+                ],
+                data=[
+                    [
+                        m.phase,
+                        m.slot,
+                        _cell(m, "win_rate"),
+                        _cell(m, "mean_win_turns"),
+                        _cell(m, "buildings_completed"),
+                        m.global_step,
+                        m.stopped_early,
+                        os.path.basename(m.meta.get("warm_start_from") or "") or None,
+                        json.dumps(self._compact(m.genome)),
+                    ]
+                    for m in ranked
+                ],
+            )
+            run.log({"evolution/run/pool": table})
+        except Exception as e:  # noqa: BLE001 - metrics are best-effort
+            logger.warning(f"failed to log pool table to wandb: {e}")
 
     # --- W&B summary run -----------------------------------------------------
 
