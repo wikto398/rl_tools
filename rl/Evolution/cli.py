@@ -6,8 +6,8 @@ passes their specs, but the framework can also be driven directly:
     python -m rl_tools.rl.Evolution \
         --space torch_files.Evolution.StrategyEvolutionSpace:StrategyEvolutionSpace \
         --child_runner torch_files.Evolution.StrategyChildRunner:StrategyChildRunner \
-        --config torch_files/evolution.yaml --executor docker \
-        --image strategy-resource:dev
+        --config torch_files/evolution.yaml --strategy pbt \
+        --executor docker --image strategy-resource:dev
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from pathlib import Path
 
 import yaml
 
-from rl_tools.rl.Evolution.BudgetSchedule import BudgetSchedule
 from rl_tools.rl.Evolution.EvolutionOrchestrator import EvolutionOrchestrator
 from rl_tools.rl.Evolution._specs import resolve_spec
+from rl_tools.rl.Evolution.strategy import build_strategy
 from rl_tools.rl.RLArgsParser import RLArgsParser
 
 # CLI flag -> `evolution:` config key.
@@ -30,6 +30,9 @@ _CLI_TO_CFG = {
     "docker_memory": "memory",
     "docker_shm": "shm_size",
     "docker_extra_args": "extra_docker_args",
+    "strategy": "strategy",
+    "max_steps": "max_steps",
+    "max_wall_hours": "max_wall_hours",
 }
 
 
@@ -81,16 +84,15 @@ def run_evolution(
         )
 
     space = resolve_spec(space_spec).genome_space()
-    budget = BudgetSchedule(
-        start=evo_cfg.get("steps_start", 50000),
-        end=evo_cfg.get("steps_end", 750000),
-        curve=evo_cfg.get("steps_curve", "geometric"),
+    strategy_spec = (
+        getattr(args, "strategy", None) or evo_cfg.get("strategy") or "generational"
     )
+    evo_cfg["strategy"] = strategy_spec
+    strategy = build_strategy(strategy_spec, evo_cfg, space)
     resume_dir = getattr(args, "resume_evolution", None)
     orchestrator = EvolutionOrchestrator(
         args,
-        space,
-        budget,
+        strategy,
         child_runner_spec,
         evo_cfg=evo_cfg,
         root_dir=resume_dir,

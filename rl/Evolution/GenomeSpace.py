@@ -50,12 +50,16 @@ class GenomeSpace:
         return {key: self._sample_one(spec, rng) for key, spec in self.genes.items()}
 
     def mutate(
-        self, genome: dict[str, Any], rng: random.Random, rate: float = 0.2
+        self,
+        genome: dict[str, Any],
+        rng: random.Random,
+        rate: float = 0.2,
+        scale: float = 1.0,
     ) -> dict[str, Any]:
         out = dict(genome)
         for key, spec in self.genes.items():
             if key in out and rng.random() < rate:
-                out[key] = self._mutate_one(spec, out[key], rng)
+                out[key] = self._mutate_one(spec, out[key], rng, scale)
         return out
 
     def crossover(
@@ -97,19 +101,22 @@ class GenomeSpace:
             raise ValueError("log_float bounds must be positive")
         return 10.0 ** rng.uniform(math.log10(lo), math.log10(hi))
 
-    def _mutate_one(self, spec: GeneSpec, value: Any, rng: random.Random) -> Any:
+    def _mutate_one(
+        self, spec: GeneSpec, value: Any, rng: random.Random, scale: float = 1.0
+    ) -> Any:
+        mutate_scale = spec.mutate_scale * scale
         if spec.type == "float":
-            span = (spec.max - spec.min) * spec.mutate_scale
+            span = (spec.max - spec.min) * mutate_scale
             return float(min(spec.max, max(spec.min, value + rng.gauss(0.0, span))))
         if spec.type == "log_float":
             import math
 
             lo, hi = math.log10(spec.min), math.log10(spec.max)
             cur = math.log10(max(value, 1e-12))
-            span = (hi - lo) * spec.mutate_scale
+            span = (hi - lo) * mutate_scale
             return 10.0 ** min(hi, max(lo, cur + rng.gauss(0.0, span)))
         if spec.type == "int":
-            span = max(1, int((spec.max - spec.min) * spec.mutate_scale))
+            span = max(1, int((spec.max - spec.min) * mutate_scale))
             return int(min(spec.max, max(spec.min, value + rng.randint(-span, span))))
         if spec.type == "choice":
             others = [v for v in spec.values if v != value] or spec.values

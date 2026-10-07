@@ -97,10 +97,13 @@ class ProcessJob(Job):
 
 
 class DockerJob(Job):
-    def __init__(self, name: str, popen: subprocess.Popen, log_file):
+    def __init__(
+        self, name: str, popen: subprocess.Popen, log_file, docker_bin: str = "docker"
+    ):
         self.name = name
         self._popen = popen
         self._log_file = log_file
+        self._docker_bin = docker_bin
 
     def poll(self) -> bool:
         return self._popen.poll() is None
@@ -117,9 +120,20 @@ class DockerJob(Job):
         return self._popen.returncode
 
     def terminate(self) -> None:
-        # `docker run` proxies signals to the container; --rm cleans it up.
         if self._popen.poll() is None:
             self._popen.terminate()
+            try:
+                self._popen.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._popen.kill()
+        # Belt and braces: a container whose PID 1 is the entrypoint ignores
+        # SIGTERM, so force-remove it (also cleans up after a killed client).
+        subprocess.run(
+            [self._docker_bin, "rm", "-f", self.name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
         if self._log_file is not None:
             self._log_file.close()
             self._log_file = None
@@ -237,6 +251,8 @@ class DockerLauncher(ChildLauncher):
             self.docker_bin,
             "run",
             "--rm",
+            # PID 1 (tini) forwards signals, so `docker stop`/Ctrl-C reach Python.
+            "--init",
             "--name",
             name,
             "--workdir",
@@ -288,7 +304,7 @@ class DockerLauncher(ChildLauncher):
         except OSError:
             log_file.close()
             raise
-        return DockerJob(name, popen, log_file)
+        return DockerJob(name, popen, log_file, docker_bin=self.docker_bin)
 
 
 def build_launcher(cfg: dict, *, root_dir: str) -> ChildLauncher:

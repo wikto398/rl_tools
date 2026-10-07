@@ -14,50 +14,51 @@ from typing import ClassVar
 import wandb
 from rl_tools.rl.Callback.Callback import Callback
 from rl_tools.rl.Callback.CallbackList import CallbackList
-from rl_tools.rl.Evolution.BudgetSchedule import BudgetSchedule
-from rl_tools.rl.Evolution.GenomeSpace import GenomeSpace
 from rl_tools.rl.Evolution.SaveEvolutionCallback import SaveEvolutionCallback
 from rl_tools.rl.Evolution.StopEvolutionCallback import StopEvolutionCallback
 from rl_tools.rl.Evolution.launchers import ChildLauncher, Job, build_launcher
+from rl_tools.rl.Evolution.strategy.EvolutionStrategy import (
+    EvolutionStrategy,
+    Stats,
+)
+from rl_tools.rl.Evolution.strategy.Individual import Individual
+from rl_tools.rl.Evolution.strategy.Population import Population
 
 logger = logging.getLogger("Evolution")
 
 
 class EvolutionOrchestrator:
-    """Generational GA over Trainers.
+    """Scheduler/engine for evolutionary hyperparameter search.
 
-    Each generation samples/evolves ``population`` genomes; children run
-    ``workers`` at a time (rolling batch). How a child is executed is pluggable
-    via :class:`~rl_tools.rl.Evolution.launchers.ChildLauncher`: a local
-    ``multiprocessing`` process (default) or its own Docker container
-    (``executor: docker``). Each child is one ``Trainer`` run (via a
-    ``ChildRunner`` subclass) and reports its fitness by writing
-    ``fitness.json``. Selection is lexicographic over
-    ``(win_rate, -mean_win_turns, buildings_completed)`` with elitism +
-    tournament, followed by crossover/mutation.
+    The engine owns the mechanics: worker slots, the child launcher (local
+    processes or one Docker container per child), logging, snapshots, stop
+    handling and W&B. *What* to run next, when a phase is done and how to
+    reproduce is delegated to an injected :class:`EvolutionStrategy`
+    (``generational`` or ``pbt``).
+
+    A child is one ``Trainer`` run (via a ``ChildRunner``) that reports its
+    fitness by writing ``fitness.json``.
     """
 
     DEFAULT_EVO_CFG: ClassVar[dict] = {
-        "population": 8,
+        # --- shared ---
         "workers": 4,
         "instances": 2,
         "eval_instances": 1,
         "eval_episodes": 10,
         "eval_every": 10000,
-        "generations": 30,
-        "steps_start": 50000,
-        "steps_end": 750000,
-        "steps_curve": "geometric",
         "stop_win_rate": 0.6,
-        "elite_count": 1,
-        "tournament_k": 3,
-        "mutation_rate": 0.2,
-        "crossover_rate": 0.8,
         "win_rate_gate": 0.0,
         "build_gate_threshold": 0.5,
         "build_gate_patience": 3,
         "wandb_group": None,
         "port_stride": 4,
+        # --- strategy selection ---
+        "strategy": "generational",
+        # --- hard stops (any strategy; useful for cloud spend) ---
+        "max_steps": None,
+        "max_wall_hours": None,
+        "poll_interval": 2.0,
         # --- child execution backend ---
         # "process": one multiprocessing child per genome (local dev).
         # "docker":  one `docker run` container per genome (cloud).
@@ -71,14 +72,24 @@ class EvolutionOrchestrator:
         "shm_size": None,
         "env": None,
         "extra_docker_args": None,
+        # --- generational defaults (also read by GenerationalStrategy) ---
+        "population": 8,
+        "generations": 30,
+        "steps_start": 50000,
+        "steps_end": 750000,
+        "steps_curve": "geometric",
+        "elite_count": 1,
+        "tournament_k": 3,
+        "mutation_rate": 0.2,
+        "crossover_rate": 0.8,
     }
 
     def __init__(
         self,
         base_args: argparse.Namespace,
-        space: GenomeSpace,
-        budget: BudgetSchedule,
+        strategy: EvolutionStrategy,
         child_runner,
+        *,
         evo_cfg: dict | None = None,
         root_dir: str | None = None,
         generation_callbacks: list[Callback] | None = None,
@@ -87,8 +98,7 @@ class EvolutionOrchestrator:
     ) -> None:
         self.base_args = base_args
         self.base_args_dict = vars(base_args)
-        self.space = space
-        self.budget = budget
+        self.strategy = strategy
         if isinstance(child_runner, str):
             self.child_runner_path = child_runner
         else:
@@ -98,17 +108,23 @@ class EvolutionOrchestrator:
         cfg = dict(self.DEFAULT_EVO_CFG)
         cfg.update(evo_cfg or {})
         self.cfg = cfg
-        if cfg["workers"] < 1 or cfg["population"] < 1:
-            raise ValueError("population and workers must be >= 1")
-        cfg["workers"] = min(cfg["workers"], cfg["population"])
+        if cfg["workers"] < 1:
+            raise ValueError("workers must be >= 1")
+        self.workers = max(1, min(int(cfg["workers"]), strategy.max_workers()))
         self.seed = int(getattr(base_args, "seed", None) or cfg.get("seed") or 42)
         # Absolute so child paths match what containers see through the
         # root_dir bind mount (the DockerLauncher mounts root_dir verbatim).
         self.root_dir = os.path.abspath(root_dir or self._default_root_dir())
         os.makedirs(os.path.join(self.root_dir, "state"), exist_ok=True)
         self.resume = bool(resume)
+        if self.resume and not strategy.supports_resume:
+            raise ValueError(
+                f"strategy '{strategy.name}' does not support --resume_evolution"
+            )
         self._stop_requested = False
-        self._active_jobs: list[tuple[Job, int]] = []
+        self._active_jobs: dict[Job, Individual] = {}
+        self._phase_budget = 0
+        self._wandb_run = None
         self.launcher = launcher or build_launcher(cfg, root_dir=self.root_dir)
         self._pid_path = os.path.join(self.root_dir, "pid")
         self._setup_logging()
@@ -142,22 +158,33 @@ class EvolutionOrchestrator:
             ch = logging.StreamHandler()
             logger.addHandler(ch)
 
-    # --- main loop ---
+    # --- main loop -----------------------------------------------------------
 
     def evolve(self) -> dict:
         if self.launcher.kind == "process":
             multiprocessing.set_start_method("spawn", force=True)
-        wandb_run = self._init_wandb_run()
+        self.strategy.bind(self)
+        self._wandb_run = self._init_wandb_run()
         self._install_signal_handlers()
         self._write_pid()
         logger.info(
-            f"executor={self.launcher.kind}"
+            f"strategy={self.strategy.name} executor={self.launcher.kind} "
+            f"workers={self.workers}"
             + (
                 f" image={self.cfg.get('image')}"
                 if self.launcher.kind == "docker"
                 else ""
             )
         )
+        if (
+            self.cfg.get("max_steps") is None
+            and self.cfg.get("max_wall_hours") is None
+            and type(self.strategy).should_stop is EvolutionStrategy.should_stop
+        ):
+            logger.warning(
+                "No max_steps/max_wall_hours set — this run stops only on "
+                "stop_win_rate, the stop file, or a signal."
+            )
         stop_callbacks = [
             cb
             for cb in self.generation_callbacks.callbacks
@@ -165,78 +192,206 @@ class EvolutionOrchestrator:
         ]
         for cb in stop_callbacks:
             cb.start()
+
         rng = random.Random(self.seed)
+        stats = Stats()
         if self.resume:
-            start_generation, population = self._load_resume_state()
+            individuals = self.strategy.resume(self._load_resume_state(), rng)
         else:
-            start_generation = 0
-            population = [self.space.sample(rng) for _ in range(self.cfg["population"])]
-        best_fitness = None
-        ranked = None
+            individuals = self.strategy.initial_population(rng)
+        population = Population(individuals, fitness_key=self.strategy.fitness_key)
+        active: dict[Job, Individual] = {}
+        self._active_jobs = active
+
+        summary = {"best_genome": None, "best_fitness": None}
         try:
-            for generation in range(start_generation, self.cfg["generations"]):
+            while True:
                 if self._stop_file_requested():
                     self._request_stop("stop file present")
-                budget = self.budget(generation, self.cfg["generations"])
-                logger.info(
-                    f"=== generation {generation}/{self.cfg['generations'] - 1} "
-                    f"budget={budget} ==="
-                )
-                self.generation_callbacks.on_generation_start(
-                    generation, budget, population
-                )
-                fitnesses = self._run_generation(population, generation)
-                ranked = self._rank(population, fitnesses)
-                best = ranked[0]
-                best_fitness = best[1]
-                logger.info(
-                    f"gen {generation}: best win_rate={best_fitness.get('win_rate')} "
-                    f"mean_win_turns={best_fitness.get('mean_win_turns')} "
-                    f"buildings_completed={best_fitness.get('buildings_completed')}"
-                )
-                logger.info(f"gen {generation}: best genome = {self._compact(best[0])}")
-                if wandb_run is not None:
-                    self._log_generation_wandb(wandb_run, generation, ranked, budget)
-                if best_fitness.get("win_rate", 0.0) >= self.cfg["stop_win_rate"]:
-                    logger.info(
-                        f"Stopping: best win_rate {best_fitness.get('win_rate')} "
-                        f">= {self.cfg['stop_win_rate']}"
+
+                launched = 0
+                while len(active) < self.workers:
+                    individual = self.strategy.next_pending(
+                        population, len(active), rng
                     )
-                    break
-                next_population = self._evolve(ranked, rng)
-                self.generation_callbacks.on_generation_end(
-                    generation, ranked, next_population
-                )
-                if self._stop_requested:
-                    logger.info(
-                        f"Stop requested — stopping after generation {generation}"
+                    if individual is None:
+                        break
+                    active[self._launch(individual)] = individual
+                    launched += 1
+
+                finished = [job for job in active if not job.poll()]
+                for job in finished:
+                    individual = active.pop(job)
+                    exit_code = job.wait()
+                    individual.fitness = self._read_fitness(individual)
+                    individual.global_step = int(
+                        (individual.fitness or {}).get("global_step", 0) or 0
                     )
+                    individual.stopped_early = bool(
+                        (individual.fitness or {}).get("stopped_early", False)
+                    )
+                    logger.info(
+                        f"  finished {individual.phase}/c{individual.slot} "
+                        f"(exit={exit_code}) "
+                        f"win_rate={(individual.fitness or {}).get('win_rate')}"
+                    )
+                    self.strategy.on_child_finished(
+                        individual, individual.fitness, population, stats, rng
+                    )
+
+                done, reason = self._should_stop(population, stats)
+                if done:
+                    logger.info(f"Stopping: {reason}")
                     break
-                population = next_population
-            if ranked is None:
-                summary = {"best_genome": None, "best_fitness": None}
-            else:
-                summary = {"best_genome": ranked[0][0], "best_fitness": best_fitness}
-            if wandb_run is not None:
-                self._finish_wandb(wandb_run, summary)
+                if not launched and not finished:
+                    time.sleep(float(self.cfg["poll_interval"]))
+
+            summary = self._summary(population)
+            if self._wandb_run is not None:
+                self._finish_wandb(self._wandb_run, summary)
         finally:
             for cb in stop_callbacks:
                 cb.stop()
             self._remove_pid()
-            for job, _ in list(self._active_jobs):
+            for job in list(active):
                 try:
                     job.terminate()
                 except Exception:  # noqa: BLE001 - best-effort cleanup
                     pass
-            self._active_jobs = []
+            active.clear()
+            self._active_jobs = {}
             self.launcher.close()
-            if wandb_run is not None:
-                wandb_run.finish()
+            if self._wandb_run is not None:
+                self._wandb_run.finish()
+
         with open(os.path.join(self.root_dir, "best.json"), "w") as f:
             json.dump(summary, f, indent=2)
         return summary
 
-    # --- W&B summary run ---
+    def _should_stop(self, population: Population, stats: Stats) -> tuple[bool, str]:
+        if self.cfg.get("max_wall_hours"):
+            if stats.elapsed() / 3600.0 >= float(self.cfg["max_wall_hours"]):
+                return True, f"max_wall_hours={self.cfg['max_wall_hours']}"
+        if self.cfg.get("max_steps"):
+            if stats.completed_steps >= int(self.cfg["max_steps"]):
+                return True, f"max_steps={self.cfg['max_steps']}"
+        return self.strategy.should_stop(population, stats)
+
+    def _summary(self, population: Population) -> dict:
+        best = population.best
+        if best is None:
+            return {"best_genome": None, "best_fitness": None}
+        return {"best_genome": best.genome, "best_fitness": best.fitness}
+
+    # --- strategy hooks (EvolutionHooks) -------------------------------------
+
+    def phase_start(self, phase: int, budget: int, genomes: list[dict]) -> None:
+        self._phase_budget = budget
+        logger.info(f"=== phase {phase} budget={budget} ===")
+        self.generation_callbacks.on_generation_start(phase, budget, genomes)
+
+    def phase_end(self, phase: int, ranked: list[tuple[dict, dict]]) -> bool:
+        best_fitness = ranked[0][1] if ranked else {}
+        if ranked:
+            logger.info(
+                f"phase {phase}: best win_rate={best_fitness.get('win_rate')} "
+                f"mean_win_turns={best_fitness.get('mean_win_turns')} "
+                f"buildings_completed={best_fitness.get('buildings_completed')}"
+            )
+            logger.info(f"phase {phase}: best genome = {self._compact(ranked[0][0])}")
+        if self._wandb_run is not None:
+            self._log_generation_wandb(
+                self._wandb_run, phase, ranked, self._phase_budget
+            )
+        stop_win_rate = self.cfg.get("stop_win_rate")
+        if stop_win_rate is not None and ranked:
+            if float(best_fitness.get("win_rate", 0.0) or 0.0) >= float(stop_win_rate):
+                logger.info(
+                    f"Stopping: best win_rate {best_fitness.get('win_rate')} "
+                    f">= {stop_win_rate}"
+                )
+                return False
+        return True
+
+    def phase_snapshot(
+        self,
+        phase: int,
+        ranked: list[tuple[dict, dict]],
+        next_population: list[dict],
+    ) -> None:
+        self.generation_callbacks.on_generation_end(phase, ranked, next_population)
+
+    def stop_requested(self) -> bool:
+        return self._stop_requested
+
+    # --- children ------------------------------------------------------------
+
+    def _launch(self, individual: Individual) -> Job:
+        individual.child_dir = self._child_dir(individual)
+        child_config = self._child_config(individual)
+        job = self.launcher.launch(
+            child_index=individual.slot,
+            generation=individual.phase_index,
+            runner_spec=self.child_runner_path,
+            base_args=self.base_args_dict,
+            genome=individual.genome,
+            child_config=child_config,
+        )
+        individual.job_name = job.name
+        # After launch, ``checkpoint`` points at what this run produces, so a
+        # later child can warm-start from it.
+        individual.checkpoint = os.path.join(
+            individual.child_dir, "checkpoints", "final.pt"
+        )
+        logger.info(
+            f"  started {individual.phase}/c{individual.slot} as {job.name!r} "
+            f"dir={individual.child_dir}"
+        )
+        return job
+
+    def _child_dir(self, individual: Individual) -> str:
+        return os.path.join(
+            self.root_dir, "children", individual.phase, f"child_{individual.slot}"
+        )
+
+    def _child_config(self, individual: Individual) -> dict:
+        cfg = self.cfg
+        return {
+            "child_dir": individual.child_dir,
+            "instances": cfg["instances"],
+            "eval_instances": cfg["eval_instances"],
+            "eval_episodes": cfg["eval_episodes"],
+            "eval_every": cfg["eval_every"],
+            "max_steps": individual.budget,
+            "seed": self.seed + individual.seed_offset,
+            "port_offset": self.launcher.port_offset(
+                individual.slot, cfg["port_stride"]
+            ),
+            # Donor checkpoint for a warm start (PBT); None = train from scratch.
+            "checkpoint": individual.checkpoint,
+            "no_load_rng": True,
+            "wandb_name": (
+                f"evo-{self.exp_name}-g{individual.phase_index}-c{individual.slot}"
+            ),
+            "wandb_group": self.wandb_group,
+            "wandb_extra_tags": (
+                f"evolution,{individual.phase},child_{individual.slot}"
+            ),
+            "win_rate_gate": cfg["win_rate_gate"],
+            "build_gate_threshold": cfg["build_gate_threshold"],
+            "build_gate_patience": cfg["build_gate_patience"],
+        }
+
+    def _read_fitness(self, individual: Individual) -> dict:
+        path = os.path.join(individual.child_dir, "fitness.json")
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            # crashed / no fitness -> worst (win_rate -1 sorts below everything)
+            return {"win_rate": -1.0}
+
+    # --- W&B summary run -----------------------------------------------------
 
     def _init_wandb_run(self):
         project = getattr(self.base_args, "wandb_project", None)
@@ -321,138 +476,7 @@ class EvolutionOrchestrator:
             }
         )
 
-    # --- running children ---
-
-    def _run_generation(self, genomes: list[dict], generation: int) -> list[dict]:
-        budget = self.budget(generation, self.cfg["generations"])
-        workers = self.cfg["workers"]
-        pending = list(enumerate(genomes))
-        active: list[tuple[Job, int]] = []
-        results: dict[int, dict] = {}
-        self._active_jobs = active
-
-        try:
-            while pending or active:
-                while pending and len(active) < workers:
-                    child_index, genome = pending.pop(0)
-                    child_config = self._child_config(child_index, generation, budget)
-                    job = self.launcher.launch(
-                        child_index=child_index,
-                        generation=generation,
-                        runner_spec=self.child_runner_path,
-                        base_args=self.base_args_dict,
-                        genome=genome,
-                        child_config=child_config,
-                    )
-                    active.append((job, child_index))
-                    logger.info(
-                        f"  started child {child_index} as {job.name!r} "
-                        f"dir={child_config['child_dir']}"
-                    )
-
-                finished = [a for a in active if not a[0].poll()]
-                for job, child_index in finished:
-                    exit_code = job.wait()
-                    active.remove((job, child_index))
-                    fitness = self._read_fitness(child_index, generation)
-                    results[child_index] = fitness
-                    logger.info(
-                        f"  finished child {child_index} (exit={exit_code}) "
-                        f"win_rate={fitness.get('win_rate')}"
-                    )
-                if not finished:
-                    time.sleep(2.0)
-        finally:
-            for job, _ in active:
-                try:
-                    job.terminate()
-                except Exception as e:  # noqa: BLE001 - best-effort cleanup
-                    logger.warning(f"  failed to terminate {job.name}: {e}")
-            self._active_jobs = []
-
-        return [results[i] for i in range(len(genomes))]
-
-    def _child_config(self, child_index: int, generation: int, budget: int) -> dict:
-        child_dir = os.path.join(
-            self.root_dir, "children", f"gen_{generation}", f"child_{child_index}"
-        )
-        return {
-            "child_dir": child_dir,
-            "instances": self.cfg["instances"],
-            "eval_instances": self.cfg["eval_instances"],
-            "eval_episodes": self.cfg["eval_episodes"],
-            "eval_every": self.cfg["eval_every"],
-            "max_steps": budget,
-            "seed": self.seed + (generation * self.cfg["population"] + child_index),
-            "port_offset": self.launcher.port_offset(
-                child_index, self.cfg["port_stride"]
-            ),
-            "wandb_name": f"evo-{self.exp_name}-g{generation}-c{child_index}",
-            "wandb_group": self.wandb_group,
-            "wandb_extra_tags": f"evolution,gen_{generation},child_{child_index}",
-            "win_rate_gate": self.cfg["win_rate_gate"],
-            "build_gate_threshold": self.cfg["build_gate_threshold"],
-            "build_gate_patience": self.cfg["build_gate_patience"],
-        }
-
-    def _read_fitness(self, child_index: int, generation: int) -> dict:
-        path = os.path.join(
-            self.root_dir,
-            "children",
-            f"gen_{generation}",
-            f"child_{child_index}",
-            "fitness.json",
-        )
-        try:
-            with open(path) as f:
-                fitness = json.load(f)
-            return fitness
-        except (OSError, json.JSONDecodeError):
-            # crashed / no fitness -> worst (win_rate -1 sorts below everything)
-            return {"win_rate": -1.0}
-
-    # --- selection / evolution ---
-
-    def _fitness_key(self, fitness: dict) -> tuple:
-        # A child that errored before its first rollout (no steps) ranks worst,
-        # not as an ordinary 0-win child.
-        if fitness.get("errored") or int(fitness.get("global_step", 1) or 0) == 0:
-            return (-1.0, 0.0, 0.0)
-        win_rate = float(fitness.get("win_rate", 0.0) or 0.0)
-        mean_win_turns = fitness.get("mean_win_turns")
-        f2 = -float(mean_win_turns) if mean_win_turns is not None else 0.0
-        f3 = float(fitness.get("buildings_completed", 0.0) or 0.0)
-        return (win_rate, f2, f3)
-
-    def _rank(self, genomes, fitnesses) -> list[tuple[dict, dict]]:
-        ranked = sorted(
-            zip(genomes, fitnesses),
-            key=lambda gf: self._fitness_key(gf[1]),
-            reverse=True,
-        )
-        return ranked
-
-    def _evolve(self, ranked, rng) -> list[dict]:
-        population = self.cfg["population"]
-        elite_count = min(self.cfg["elite_count"], population)
-        next_gen = [genome for genome, _ in ranked[:elite_count]]
-        while len(next_gen) < population:
-            a = self._tournament(ranked, rng)
-            b = self._tournament(ranked, rng)
-            child = self.space.crossover(a, b, rng, rate=self.cfg["crossover_rate"])
-            child = self.space.mutate(child, rng, rate=self.cfg["mutation_rate"])
-            next_gen.append(child)
-        return next_gen
-
-    def _tournament(self, ranked, rng) -> dict:
-        k = min(self.cfg["tournament_k"], len(ranked))
-        contenders = rng.sample(ranked, k)
-        best = max(contenders, key=lambda gf: self._fitness_key(gf[1]))
-        return best[0]
-
-    # --- state ---
-
-    # --- pause / resume ---
+    # --- pause / resume ------------------------------------------------------
 
     def _install_signal_handlers(self) -> None:
         def handler(signum, frame) -> None:
@@ -484,7 +508,7 @@ class EvolutionOrchestrator:
         except OSError:
             pass
 
-    def _load_resume_state(self) -> tuple[int, list[dict]]:
+    def _load_resume_state(self) -> dict:
         state_dir = os.path.join(self.root_dir, "state")
         snapshots = [
             name
@@ -499,12 +523,8 @@ class EvolutionOrchestrator:
         latest = snapshots[-1]
         with open(os.path.join(state_dir, latest)) as f:
             state = json.load(f)
-        start_generation = int(state["next_generation"])
-        next_population = list(state["next_population"])
-        logger.info(
-            f"Resuming evolution from generation {start_generation} (snapshot {latest})"
-        )
-        return start_generation, next_population
+        logger.info(f"Resuming evolution from snapshot {latest}")
+        return state
 
     @staticmethod
     def _compact(genome: dict) -> dict:

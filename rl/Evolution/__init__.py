@@ -12,6 +12,15 @@ from rl_tools.rl.Evolution.launchers import (
     ProcessLauncher,
     build_launcher,
 )
+from rl_tools.rl.Evolution.strategy import (
+    EvolutionStrategy,
+    Individual,
+    Population,
+    Stats,
+    build_strategy,
+)
+from rl_tools.rl.Evolution.strategy.GenerationalStrategy import GenerationalStrategy
+from rl_tools.rl.Evolution.strategy.PBTStrategy import PBTStrategy
 
 __all__ = [
     "BudgetSchedule",
@@ -20,12 +29,19 @@ __all__ = [
     "ChildSpec",
     "DockerLauncher",
     "EvolutionOrchestrator",
+    "EvolutionStrategy",
     "FitnessCallback",
     "GeneSpec",
+    "GenerationalStrategy",
     "GenomeSpace",
+    "Individual",
     "Job",
+    "PBTStrategy",
+    "Population",
     "ProcessLauncher",
     "SaveEvolutionCallback",
+    "Stats",
     "StopEvolutionCallback",
     "build_launcher",
+    "build_strategy",
 ]

@@ -73,6 +73,12 @@ class ChildRunner:
         args.max_steps = child_config["max_steps"]
         args.seed = child_config.get("seed", getattr(args, "seed", None))
         args.port_offset = child_config.get("port_offset", 0)
+        # PBT-lite warm start: continue from a donor child's checkpoint.
+        checkpoint = child_config.get("checkpoint")
+        if checkpoint:
+            args.checkpoint = checkpoint
+            args.no_load_optimizer = bool(child_config.get("no_load_optimizer", False))
+            args.no_load_rng = bool(child_config.get("no_load_rng", True))
         args.expert_eps = spec.expert_eps
         args.expert_eps_decay_steps = spec.expert_eps_decay_steps
         args.torch_compile = False

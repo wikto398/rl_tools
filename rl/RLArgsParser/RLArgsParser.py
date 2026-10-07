@@ -346,6 +346,19 @@ class RLArgsParser:
             "(default: evolution.child_runner from --config).",
         )
         parser.add_argument(
+            "--strategy",
+            type=str,
+            default=None,
+            help="Evolution: algorithm policy — 'generational' (default) or 'pbt', "
+            "or a 'module:Class' EvolutionStrategy.",
+        )
+        parser.add_argument(
+            "--max_wall_hours",
+            type=float,
+            default=None,
+            help="Evolution: hard wall-clock stop after this many hours (spend guard).",
+        )
+        parser.add_argument(
             "--executor",
             type=str,
             choices=["process", "docker"],
