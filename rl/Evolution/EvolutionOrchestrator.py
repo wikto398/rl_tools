@@ -59,6 +59,10 @@ class EvolutionOrchestrator:
         "port_stride": 4,
         #: log the pool table to W&B every N completed children (0 = never)
         "wandb_table_every": 20,
+        #: log a trend/progress line + write progress.json every N children
+        "progress_every": 10,
+        #: trend window: last N children vs the N before them
+        "progress_window": 10,
         # --- strategy selection ---
         "strategy": "generational",
         # --- hard stops (any strategy; useful for cloud spend) ---
@@ -133,6 +137,9 @@ class EvolutionOrchestrator:
         self._wandb_run = None
         self._run_metrics_defined = False
         self._last_table_at = 0
+        self._history: list[dict] = []
+        self._best_individual: Individual | None = None
+        self._last_progress_at = 0
         self.launcher = launcher or build_launcher(cfg, root_dir=self.root_dir)
         self._pid_path = os.path.join(self.root_dir, "pid")
         self._setup_logging()
@@ -238,22 +245,48 @@ class EvolutionOrchestrator:
                     individual.stopped_early = bool(
                         (individual.fitness or {}).get("stopped_early", False)
                     )
-                    if (individual.fitness or {}).get(
-                        "errored"
-                    ) or individual.global_step == 0:
+                    fitness = individual.fitness or {}
+                    if fitness.get("errored") or individual.global_step == 0:
                         stats.crashed += 1
                     if individual.stopped_early:
                         stats.stopped_early += 1
+                    self._history.append(
+                        {
+                            "resources": float(
+                                fitness.get("mean_end_total_resources", 0.0) or 0.0
+                            ),
+                            "working": float(
+                                fitness.get("mean_end_working_population", 0.0) or 0.0
+                            ),
+                            "population": float(
+                                fitness.get("mean_end_population", 0.0) or 0.0
+                            ),
+                            "buildings": float(
+                                fitness.get("buildings_completed", 0.0) or 0.0
+                            ),
+                            "win_rate": float(fitness.get("win_rate", 0.0) or 0.0),
+                        }
+                    )
+                    if self._best_individual is None or self.strategy.fitness_key(
+                        individual.fitness
+                    ) > self.strategy.fitness_key(self._best_individual.fitness):
+                        self._best_individual = individual
+                    last = self._history[-1]
+                    warm = individual.meta.get("warm_start_from")
                     logger.info(
                         f"  finished {individual.phase}/c{individual.slot} "
-                        f"(exit={exit_code}) "
-                        f"win_rate={(individual.fitness or {}).get('win_rate')}"
+                        f"(exit={exit_code}) win_rate={last['win_rate']:.3f} "
+                        f"res={last['resources']:.0f} "
+                        f"working={last['working']:.1f} "
+                        f"buildings={last['buildings']:.1f}"
+                        + (f" warm=c{str(warm).rsplit('child_', 1)[1]}" if warm else "")
                     )
                     self.strategy.on_child_finished(
                         individual, individual.fitness, population, stats, rng
                     )
                 if finished:
                     self._log_run_stats(population, stats)
+                    self._maybe_report_progress(population, stats)
 
                 done, reason = self._should_stop(population, stats)
                 if done:
@@ -262,6 +295,7 @@ class EvolutionOrchestrator:
                 if not launched and not finished:
                     time.sleep(float(self.cfg["poll_interval"]))
 
+            self._maybe_report_progress(population, stats, force=True)
             summary = self._summary(population, stats)
             if self._wandb_run is not None:
                 self._finish_wandb(self._wandb_run, summary)
@@ -292,6 +326,118 @@ class EvolutionOrchestrator:
             if stats.completed_steps >= int(self.cfg["max_steps"]):
                 return True, f"max_steps={self.cfg['max_steps']}"
         return self.strategy.should_stop(population, stats)
+
+    # --- progress / trend reporting -----------------------------------------
+
+    _TRENDS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("resources", "{:.0f}"),
+        ("working", "{:.2f}"),
+        ("population", "{:.2f}"),
+        ("buildings", "{:.2f}"),
+        ("win_rate", "{:.3f}"),
+    )
+
+    def _trend(self, key: str, window: int) -> dict | None:
+        """Mean of the last ``window`` children vs the ``window`` before them."""
+        vals = [h[key] for h in self._history]
+        if len(vals) < 2:
+            return None
+        k = max(1, min(int(window), len(vals) // 2))
+        recent = vals[-k:]
+        previous = vals[-2 * k : -k]
+        recent_mean = sum(recent) / len(recent)
+        if not previous:
+            return {"recent": recent_mean, "previous": None, "delta": None}
+        previous_mean = sum(previous) / len(previous)
+        return {
+            "recent": recent_mean,
+            "previous": previous_mean,
+            "delta": recent_mean - previous_mean,
+        }
+
+    @staticmethod
+    def _format_trend(label: str, trend: dict | None, fmt: str) -> str:
+        if trend is None:
+            return f"{label}: n/a"
+        text = f"{label} {fmt.format(trend['recent'])}"
+        if trend["delta"] is None:
+            return text
+        sign = "+" if trend["delta"] >= 0 else ""
+        return f"{text} ({sign}{fmt.format(trend['delta'])})"
+
+    def _maybe_report_progress(
+        self, population: Population, stats: Stats, *, force: bool = False
+    ) -> None:
+        every = int(self.cfg.get("progress_every", 10) or 0)
+        if not every:
+            return
+        if not force and stats.completed - self._last_progress_at < every:
+            return
+        self._last_progress_at = stats.completed
+        window = int(self.cfg.get("progress_window", 10) or 10)
+
+        parts = [
+            self._format_trend(key, self._trend(key, window), fmt)
+            for key, fmt in self._TRENDS
+        ]
+        best = self._best_individual
+        best_text = ""
+        if best is not None and best.fitness:
+            best_fitness = best.fitness or {}
+            best_text = (
+                f" | best c{best.slot} (res="
+                f"{float(best_fitness.get('mean_end_total_resources', 0.0) or 0.0):.0f}, "
+                f"working="
+                f"{float(best_fitness.get('mean_end_working_population', 0.0) or 0.0):.1f})"
+            )
+        logger.info(
+            f"progress: children={stats.completed} steps={stats.completed_steps} "
+            f"elapsed={stats.elapsed() / 3600.0:.2f}h | "
+            + " | ".join(parts)
+            + best_text
+        )
+        self._write_progress_json(population, stats, window)
+
+    def _write_progress_json(
+        self, population: Population, stats: Stats, window: int
+    ) -> None:
+        evaluated = population.evaluated()
+
+        def _mean(key: str) -> float | None:
+            values = [float((m.fitness or {}).get(key, 0.0) or 0.0) for m in evaluated]
+            return sum(values) / len(values) if values else None
+
+        best = self._best_individual
+        snapshot = {
+            "children": stats.completed,
+            "completed_steps": stats.completed_steps,
+            "elapsed_hours": round(stats.elapsed() / 3600.0, 4),
+            "crashed": stats.crashed,
+            "stopped_early": stats.stopped_early,
+            "trend_window": window,
+            "trend": {key: self._trend(key, window) for key, _ in self._TRENDS},
+            "pool": {
+                "size": len(population.members),
+                "mean_win_rate": _mean("win_rate"),
+                "mean_end_total_resources": _mean("mean_end_total_resources"),
+                "mean_end_working_population": _mean("mean_end_working_population"),
+                "mean_buildings_completed": _mean("buildings_completed"),
+            },
+            "best": (
+                {
+                    "phase": best.phase,
+                    "slot": best.slot,
+                    "checkpoint": best.checkpoint,
+                    "warm_start_from": best.meta.get("warm_start_from"),
+                    "genome": self._compact(best.genome),
+                    "fitness": best.fitness,
+                }
+                if best is not None
+                else None
+            ),
+        }
+        with open(os.path.join(self.root_dir, "progress.json"), "w") as f:
+            json.dump(snapshot, f, indent=2)
 
     def _summary(self, population: Population, stats: Stats) -> dict:
         best = population.best
@@ -457,6 +603,15 @@ class EvolutionOrchestrator:
         win_rates = [float(f.get("win_rate", 0.0) or 0.0) for f in fitnesses]
         buildings = [float(f.get("buildings_completed", 0.0) or 0.0) for f in fitnesses]
         steps = [int(f.get("global_step", 0) or 0) for f in fitnesses]
+        resources = [
+            float(f.get("mean_end_total_resources", 0.0) or 0.0) for f in fitnesses
+        ]
+        populations = [
+            float(f.get("mean_end_population", 0.0) or 0.0) for f in fitnesses
+        ]
+        working = [
+            float(f.get("mean_end_working_population", 0.0) or 0.0) for f in fitnesses
+        ]
         returns = [
             float(f["mean_return"])
             for f in fitnesses
@@ -484,12 +639,28 @@ class EvolutionOrchestrator:
                     / len(buildings),
                     "evolution/run/best_buildings_completed": max(buildings),
                     "evolution/run/mean_global_step": sum(steps) / len(steps),
+                    # reward-invariant selection signal
+                    "evolution/run/mean_end_resources": sum(resources) / len(resources),
+                    "evolution/run/mean_end_population": sum(populations)
+                    / len(populations),
+                    "evolution/run/mean_end_working_population": sum(working)
+                    / len(working),
                 }
             )
         if returns:
             scalars["evolution/run/mean_return"] = sum(returns) / len(returns)
         if elapsed > 1.0:  # meaningless over a just-started run
             scalars["evolution/run/steps_per_second"] = stats.completed_steps / elapsed
+        best = self._best_individual
+        if best is not None and best.fitness:
+            scalars["evolution/run/best_mean_end_resources"] = float(
+                (best.fitness or {}).get("mean_end_total_resources", 0.0) or 0.0
+            )
+        resources_trend = self._trend(
+            "resources", int(self.cfg.get("progress_window", 10) or 10)
+        )
+        if resources_trend and resources_trend["delta"] is not None:
+            scalars["evolution/run/delta_mean_end_resources"] = resources_trend["delta"]
         try:
             run.log(scalars)
         except Exception as e:  # noqa: BLE001 - metrics are best-effort
@@ -515,6 +686,9 @@ class EvolutionOrchestrator:
                     "win_rate",
                     "mean_win_turns",
                     "buildings_completed",
+                    "mean_end_resources",
+                    "mean_end_population",
+                    "mean_end_working_population",
                     "global_step",
                     "stopped_early",
                     "warm_start_from",
@@ -527,6 +701,9 @@ class EvolutionOrchestrator:
                         _cell(m, "win_rate"),
                         _cell(m, "mean_win_turns"),
                         _cell(m, "buildings_completed"),
+                        _cell(m, "mean_end_total_resources"),
+                        _cell(m, "mean_end_population"),
+                        _cell(m, "mean_end_working_population"),
                         m.global_step,
                         m.stopped_early,
                         os.path.basename(m.meta.get("warm_start_from") or "") or None,

@@ -13,15 +13,25 @@ from collections.abc import Iterator
 
 from rl_tools.rl.Evolution.strategy.Individual import Individual
 
-#: Lexicographic ranking: win_rate, then fewer turns to win, then buildings.
-WORST_KEY: tuple[float, float, float] = (-1.0, 0.0, 0.0)
+#: Lexicographic ranking: win_rate, then fewer turns to win, then
+#: reward-invariant game-state outcomes (economy, population, employment,
+#: construction). All components are 0-filled when a metric is absent, so
+#: genomes that retune their own reward coefficients cannot inflate the key.
+WORST_KEY: tuple[float, ...] = (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-def default_fitness_key(fitness: dict | None) -> tuple[float, float, float]:
+def default_fitness_key(fitness: dict | None) -> tuple[float, ...]:
     """Score an individual's fitness dict (higher is better).
 
     A child that errored before its first rollout (no steps) ranks worst, not
     as an ordinary 0-win child.
+
+    The tiebreakers after ``win_rate`` are deliberately **reward-invariant**
+    game-state outcomes from the episode summary (``mean_end_*`` keys). Child
+    genomes mutate their own reward coefficients, so raw return is not
+    comparable across children — a genome could inflate its score by retuning
+    its reward function. End-of-episode resources / population / working
+    population / completed buildings can only improve through actual play.
     """
     if not fitness:
         return WORST_KEY
@@ -30,8 +40,11 @@ def default_fitness_key(fitness: dict | None) -> tuple[float, float, float]:
     win_rate = float(fitness.get("win_rate", 0.0) or 0.0)
     mean_win_turns = fitness.get("mean_win_turns")
     f2 = -float(mean_win_turns) if mean_win_turns is not None else 0.0
-    f3 = float(fitness.get("buildings_completed", 0.0) or 0.0)
-    return (win_rate, f2, f3)
+    resources = float(fitness.get("mean_end_total_resources", 0.0) or 0.0)
+    population = float(fitness.get("mean_end_population", 0.0) or 0.0)
+    working = float(fitness.get("mean_end_working_population", 0.0) or 0.0)
+    buildings = float(fitness.get("buildings_completed", 0.0) or 0.0)
+    return (win_rate, f2, resources, population, working, buildings)
 
 
 class Population:

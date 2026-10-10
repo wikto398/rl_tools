@@ -9,6 +9,14 @@ from tensordict import TensorDict
 from rl_tools.rl.Callback.Callback import Callback
 
 
+def _losses(latest: dict) -> int | None:
+    """Loss count derived from n_wins/n_episodes (None when unavailable)."""
+    wins, episodes = latest.get("n_wins"), latest.get("n_episodes")
+    if wins is None or episodes is None:
+        return None
+    return int(episodes) - int(wins)
+
+
 class FitnessCallback(Callback):
     """Export the final eval fitness of an evolutionary child.
 
@@ -32,10 +40,22 @@ class FitnessCallback(Callback):
         latest = blackboard.get("eval/latest", {}) or {}
         fitness = {
             "win_rate": float(latest.get("win_rate", 0.0)),
+            "n_wins": latest.get("n_wins"),
+            "n_episodes": latest.get("n_episodes"),
+            "n_losses": _losses(latest),
             "mean_win_turns": latest.get("mean_win_turns"),
             "mean_loss_turns": latest.get("mean_loss_turns"),
             "mean_return": latest.get("mean_return"),
             "mean_length": latest.get("mean_length"),
+            # reward-invariant end-of-episode game state (ranking tiebreakers)
+            "mean_end_population": latest.get("mean_end_population"),
+            "mean_end_working_population": latest.get("mean_end_working_population"),
+            "mean_end_total_resources": latest.get("mean_end_total_resources"),
+            "mean_end_production": latest.get("mean_end_production"),
+            # per-building-type detail (may be absent on generic evals)
+            "buildings_started_by_type": latest.get("buildings_started_by_type"),
+            "buildings_completed_by_type": latest.get("buildings_completed_by_type"),
+            "reward_breakdown": latest.get("reward_breakdown"),
             "buildings_started": float(latest.get("buildings_started", 0.0)),
             "buildings_completed": float(latest.get("buildings_completed", 0.0)),
             "eval_step": blackboard.get("eval/latest_step"),

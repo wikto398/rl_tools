@@ -39,7 +39,11 @@ class WandbCallback(SinkCallback):
         latest = self.agent.blackboard.get("eval/latest")
         if latest and step is not None and step != self._last_eval_step:
             self._last_eval_step = step
-            columns = list(latest.keys())
-            row = [latest[c] for c in columns]
+            # games may merge nested dicts (per-building/per-term breakdowns)
+            # into eval/latest; the table only carries scalar columns
+            columns = [
+                key for key, value in latest.items() if isinstance(value, (int, float))
+            ]
+            row = [latest[column] for column in columns]
             table = wandb_lib.Table(columns=columns, data=[row])
             self.wandb_run.log({"eval/latest": table}, step=step)

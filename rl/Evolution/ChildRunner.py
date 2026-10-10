@@ -19,8 +19,10 @@ class ChildSpec:
 
     agent_overrides: dict = field(default_factory=dict)
     engine_args: dict = field(default_factory=dict)
-    expert_eps: float = 0.0
-    expert_eps_decay_steps: int = 0
+    #: expert-coach fraction; ``None`` = inherit from the base args, so the
+    #: config decides (genomes no longer carry these knobs).
+    expert_eps: float | None = None
+    expert_eps_decay_steps: int | None = None
 
 
 class ChildRunner:
@@ -79,8 +81,12 @@ class ChildRunner:
             args.checkpoint = checkpoint
             args.no_load_optimizer = bool(child_config.get("no_load_optimizer", False))
             args.no_load_rng = bool(child_config.get("no_load_rng", True))
-        args.expert_eps = spec.expert_eps
-        args.expert_eps_decay_steps = spec.expert_eps_decay_steps
+        # Only override when the strategy provides a value; otherwise the base
+        # config's expert settings apply to every child.
+        if spec.expert_eps is not None:
+            args.expert_eps = spec.expert_eps
+        if spec.expert_eps_decay_steps is not None:
+            args.expert_eps_decay_steps = spec.expert_eps_decay_steps
         args.torch_compile = False
         args.wandb_name = child_config.get("wandb_name")
         args.wandb_group = child_config.get("wandb_group")
